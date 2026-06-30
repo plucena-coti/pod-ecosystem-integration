@@ -11,10 +11,6 @@
     {
       "name": "integration",
       "path": "."
-    },
-    {
-      "name": "legacy (pod-mpc-lib)",
-      "path": "../pod-mpc-lib"
     }
   ],
   "settings": {
