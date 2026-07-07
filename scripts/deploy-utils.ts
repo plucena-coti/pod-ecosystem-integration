@@ -237,8 +237,10 @@ export const CHAINLINK_FEEDS = {
   sepoliaBtcUsd: "0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43" as const,
   sepoliaUsdcUsd: "0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E" as const,
   mainnetEthUsd: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" as const,
-  fujiAvaxUsd: "0x0A77230d17318075983913bC2145DB16C7366156" as const,
+  /** Avalanche mainnet AVAX/USD */
   mainnetAvaxUsd: "0x0A77230d17318075983913bC2145DB16C7366156" as const,
+  /** Avalanche Fuji AVAX/USD (Chainlink EACAggregatorProxy). */
+  fujiAvaxUsd: "0x5498BB86BC934c8D34FDA08E81D444153d0D06aD" as const,
 } as const;
 
 /** Band StdReference defaults (override via `oracle.bandStdRef` in deployConfig). */
@@ -842,8 +844,33 @@ export const deployPodOracleStack = async (
   // Refresh live feeds before manual inbox legs: setLocal/RemoteTokenPriceUSD updates
   // lastFetchTimestamp and would block refreshCache while fetchInterval is active.
   if (feeds.localFeed !== zeroAddress || feeds.remoteFeed !== zeroAddress || adapterType === "band") {
-    const h = await podOracle.write.refreshCache([], writeOpts);
+    try {
+      const h = await podOracle.write.refreshCache([], writeOpts);
+      await waitMined(publicClient, h);
+    } catch (error) {
+      console.warn(
+        `[deployPodOracleStack] refreshCache failed on chainId=${chainId}; seeding manual inbox legs instead.`,
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+
+  const nativeToken = tokens.portalNative;
+  try {
+    const nativeLive = await podOracle.read.getLivePrice([nativeToken]);
+    if (nativeLive === 0n) {
+      const peg = localSpot ? usdPerWholeToken18(localSpot) : localUsd18;
+      const h = await podOracle.write.setTokenPriceUSD([nativeToken, peg], writeOpts);
+      await waitMined(publicClient, h);
+    }
+  } catch (error) {
+    const peg = localSpot ? usdPerWholeToken18(localSpot) : localUsd18;
+    const h = await podOracle.write.setTokenPriceUSD([nativeToken, peg], writeOpts);
     await waitMined(publicClient, h);
+    console.warn(
+      `[deployPodOracleStack] native live price unavailable on chainId=${chainId}; set manual peg ${peg}.`,
+      error instanceof Error ? error.message : error
+    );
   }
 
   if (feeds.manualLeg === "local" || feeds.manualLeg === "both") {
