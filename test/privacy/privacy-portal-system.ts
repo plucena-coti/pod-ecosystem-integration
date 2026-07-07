@@ -95,8 +95,8 @@ d("PrivacyPortal (Sepolia ↔ COTI system)", { concurrency: 1 }, async function 
       (await ctx.underlying.read.balanceOf([ctx.withdrawRecipient])) as bigint,
       recipientBefore + withdrawAmt
     );
-    assert.equal((await ctx.portal.read.burnDebtAmount()) as bigint, 0n);
-    ppLog("case withdraw: done (underlying released, pToken burned, no burn debt)");
+    assert.equal((await ctx.portal.read.pendingBurnAmount()) as bigint, 0n);
+    ppLog("case withdraw: done (underlying released, pToken batch-burned, no pending burn)");
   });
 
   it("pToken transfer: public transfer owner → Bob after deposit", async function () {

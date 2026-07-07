@@ -13,6 +13,7 @@ import {
   type MineRequestOptions,
   type TestContext,
 } from "../system/mpc-test-utils.js";
+import { oracleTokensForChain } from "../../scripts/oracle-tokens.js";
 import {
   completePodOpRoundTrip,
   getDefaultCotiMineGasPodToken,
@@ -62,6 +63,8 @@ export async function setupPrivacyPortalSystemContext(params: {
   ]);
 
   ppLog("deploy PrivacyPortal + PodErc20Mintable (minter = portal)");
+  const { portalNative } = oracleTokensForChain(11155111);
+  const mockFactory = await params.sepoliaViem.deployContract("MockPrivacyPortalFactory", [owner, portalNative]);
   const portal = await params.sepoliaViem.deployContract("PrivacyPortal", []);
   const pod = await params.sepoliaViem.deployContract("PodErc20Mintable", [
     portal.address,
@@ -75,6 +78,7 @@ export async function setupPrivacyPortalSystemContext(params: {
   await portal.write.initialize([owner, underlying.address, pod.address, 18, false], {
     account: owner,
   });
+  await portal.write.setPauseController([mockFactory.address], { account: owner });
 
   ppLog("fund portal and pToken with native inbox fees");
   await fundContractForInboxFees(hardhatCotiWallet, base.sepolia.publicClient, pod.address as `0x${string}`);
@@ -192,7 +196,7 @@ export async function depositAndComplete(
   const recipient = params.recipient ?? ctx.owner;
   const fees = ctx.base.podTwoWayFees;
   ppLog(`${params.label}: deposit ${amount} underlying → mint pToken for ${recipient}`);
-  const hash = await ctx.portal.write.deposit([recipient, amount, fees.callbackFeeWei], {
+  const hash = await ctx.portal.write.deposit([recipient, amount, 0n, fees.callbackFeeWei], {
     account: ctx.owner,
     value: fees.totalValueWei,
   });
@@ -205,7 +209,7 @@ export async function depositAndComplete(
   ppLog(`${params.label}: portal vault underlying=${vault}`);
 }
 
-/** Withdraw with permit: transfer-to-portal round-trip, then burn round-trip. */
+/** Withdraw with permit: transfer-to-portal round-trip, then owner batch burn round-trip. */
 export async function withdrawAndComplete(
   ctx: PrivacyPortalSystemContext,
   amount: bigint,
@@ -214,7 +218,6 @@ export async function withdrawAndComplete(
   const recipient = params.recipient ?? ctx.withdrawRecipient;
   const fees = ctx.base.podTwoWayFees;
   const transferFee = fees.totalValueWei;
-  const burnFee = fees.totalValueWei;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 86_400);
   const permit = await signPublicTransferPermit({
     ctx,
@@ -230,16 +233,15 @@ export async function withdrawAndComplete(
     [
       recipient,
       amount,
+      0n,
       transferFee,
-      fees.callbackFeeWei,
-      burnFee,
       fees.callbackFeeWei,
       permit.deadline,
       permit.v,
       permit.r,
       permit.s,
     ],
-    { account: ctx.owner, value: transferFee + burnFee }
+    { account: ctx.owner, value: transferFee }
   );
   await ctx.base.sepolia.publicClient.waitForTransactionReceipt({ hash, ...receiptWaitOptions });
 
@@ -249,7 +251,14 @@ export async function withdrawAndComplete(
     gas: params.mineOptions?.gas ?? getDefaultCotiMineGasPodToken(),
   });
 
-  ppLog(`${params.label}: mine burn leg (portal burns pToken)`);
+  ppLog(`${params.label}: owner batch burn ${amount} pTokens held in portal`);
+  const burnHash = await ctx.portal.write.burnAccumulatedPTokens([amount, fees.callbackFeeWei], {
+    account: ctx.owner,
+    value: fees.totalValueWei,
+  });
+  await ctx.base.sepolia.publicClient.waitForTransactionReceipt({ hash: burnHash, ...receiptWaitOptions });
+
+  ppLog(`${params.label}: mine batch burn leg`);
   await runCrossChainTwoWayRoundTrip(ctx.base, `${params.label}:burn`, {
     ...params.mineOptions,
     gas: params.mineOptions?.gas ?? getDefaultCotiMineGasPodToken(),

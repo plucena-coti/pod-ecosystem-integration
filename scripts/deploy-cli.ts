@@ -5,7 +5,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { network } from "hardhat";
 import type { Address, PublicClient, WalletClient } from "viem";
-import { encodeFunctionData } from "viem";
+import { encodeFunctionData, zeroAddress } from "viem";
 import {
   INBOX_SALT_LABEL,
   buildInboxSalt,
@@ -14,19 +14,29 @@ import {
 } from "./createx.js";
 import {
   asAddress,
+  chainlinkFeedsForChain,
   configureTestnetInboxMinFees,
   createPublicClientForChain,
-  deployAndWireTestnetPriceOracle,
   deployDeterministicInbox,
+  deployOracleForChain,
   ensureMinerRegistered,
   getViemClients,
+  oracleConfigFromChain,
+  oracleAdapterType,
+  recordOracleDeploy,
+  resolveConsumerOracle,
+  resolvePortalOracle,
   optionalEnv,
   podConfigureKeepInbox,
   patchBuildInfoSolcLongVersion,
   readFeeConfigForChain,
+  oracleTokensForChain,
   resolveDeployerAddress,
   resolveWalletAccount,
+  usePlainOracleForConfig,
   waitMined,
+  wireOracleToFactory,
+  wireOracleToInbox,
   COTI_ADMIN_WRITE_GAS,
   ensureGasFunds,
 } from "./deploy-utils.js";
@@ -582,24 +592,124 @@ const TARGETS: Target[] = [
     id: "priceOracle",
     label: "PriceOracle",
     kind: "contract",
-    contractName: "PriceOracle",
+    contractName: "PoDPriceOracle",
     roles: ["source", "coti"],
-    dependsOn: ["inbox"],
+    dependsOn: [],
     configKey: "priceOracle",
     resolveAddress: (_ctx, chainCfg) => chainCfg.priceOracle || undefined,
     deploy: async (ctx) => {
-      const inbox = await getInbox(ctx);
-      const oracle = await deployAndWireTestnetPriceOracle({
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const oracleConfig = oracleConfigFromChain(chainCfg);
+      const { address, contractName, liveAdapter } = await deployOracleForChain({
         viem: ctx.viem,
         publicClient: ctx.publicClient,
         walletClient: ctx.walletClient,
         chainId: ctx.chainId,
-        inbox,
+        oracleConfig,
       });
-      console.log("  wired oracle into inbox (set min fees via the FeeConfig action)");
-      return oracle.address as Address;
+      const cfg = await readCfg();
+      const entry = chainEntry(cfg, ctx.chainId);
+      recordOracleDeploy(entry, {
+        priceOracle: address,
+        liveAdapter,
+        adapter: oracleAdapterType(oracleConfig),
+      });
+      await writeCfg(cfg);
+      console.log(`  deployed ${contractName} at ${address}`);
+      if (liveAdapter) {
+        console.log(`  live adapter (${oracleAdapterType(oracleConfig)}) at ${liveAdapter}`);
+      }
+      console.log("  run WireInboxOracle / WireFactoryOracle to point consumers at the oracle(s)");
+      console.log(
+        "  optional: set oracle.consumers.inbox / oracle.consumers.privacyPortalFactory to use different addresses"
+      );
+      return address;
     },
-    verifyArgs: (ctx) => [ctx.deployer],
+    verifyArgs: (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const oracleConfig = oracleConfigFromChain(chainCfg);
+      if (usePlainOracleForConfig(oracleConfig)) {
+        return [ctx.deployer];
+      }
+      const feeds = chainlinkFeedsForChain(ctx.chainId);
+      const liveAdapter = (chainCfg.oracle?.liveAdapter?.trim() || zeroAddress) as Address;
+      const fetchInterval =
+        oracleConfig.fetchInterval != null && String(oracleConfig.fetchInterval).trim() !== ""
+          ? String(oracleConfig.fetchInterval)
+          : feeds.fetchIntervalSeconds.toString();
+      return [ctx.deployer, liveAdapter, fetchInterval];
+    },
+  },
+  {
+    id: "wireInboxOracle",
+    label: "WireInboxOracle",
+    kind: "action",
+    roles: ["source", "coti"],
+    dependsOn: ["inbox"],
+    status: async (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const oracleAddr = resolveConsumerOracle(chainCfg, "inbox");
+      if (!oracleAddr || !isAddr(oracleAddr)) return { applied: false, detail: "no inbox oracle in deployConfig" };
+      if (!(await hasOnChainCode(ctx.publicClient, oracleAddr))) {
+        return { applied: false, detail: "oracle address has no code" };
+      }
+      const inbox = await getInbox(ctx);
+      const current = (await inbox.read.priceOracle()) as Address;
+      if (current.toLowerCase() === oracleAddr.toLowerCase()) {
+        return { applied: true, detail: String(oracleAddr) };
+      }
+      return { applied: false, detail: `inbox=${current} config=${oracleAddr}` };
+    },
+    run: async (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const oracleAddr = asAddress(resolveConsumerOracle(chainCfg, "inbox")!, "inbox oracle");
+      const inbox = await getInbox(ctx);
+      await wireOracleToInbox({
+        inbox,
+        oracleAddress: oracleAddr,
+        publicClient: ctx.publicClient,
+        walletClient: ctx.walletClient,
+      });
+      console.log(`  inbox wired to oracle ${oracleAddr}`);
+    },
+  },
+  {
+    id: "wireFactoryOracle",
+    label: "WireFactoryOracle",
+    kind: "action",
+    roles: ["source"],
+    dependsOn: ["ppPortalFactory"],
+    status: async (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const oracleAddr = resolveConsumerOracle(chainCfg, "privacyPortalFactory");
+      const factoryAddr = chainCfg.privacyPortalFactory;
+      if (!oracleAddr || !isAddr(oracleAddr)) return { applied: false, detail: "no portal oracle in deployConfig" };
+      if (!(await hasOnChainCode(ctx.publicClient, oracleAddr))) {
+        return { applied: false, detail: "portal oracle address has no code" };
+      }
+      if (!isAddr(factoryAddr)) return { applied: false, detail: "no privacyPortalFactory in deployConfig" };
+      const factory = await ctx.viem.getContractAt("PrivacyPortalFactory", factoryAddr as Address, {
+        client: { public: ctx.publicClient, wallet: ctx.walletClient },
+      });
+      const current = (await factory.read.priceOracle()) as Address;
+      if (current.toLowerCase() === oracleAddr.toLowerCase()) {
+        return { applied: true, detail: String(oracleAddr) };
+      }
+      return { applied: false, detail: `factory=${current} config=${oracleAddr}` };
+    },
+    run: async (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const oracleAddr = asAddress(resolveConsumerOracle(chainCfg, "privacyPortalFactory")!, "portal oracle");
+      const factoryAddr = asAddress(chainCfg.privacyPortalFactory, "privacyPortalFactory");
+      await wireOracleToFactory({
+        viem: ctx.viem,
+        factoryAddress: factoryAddr,
+        oracleAddress: oracleAddr,
+        publicClient: ctx.publicClient,
+        walletClient: ctx.walletClient,
+      });
+      console.log(`  factory wired to oracle ${oracleAddr}`);
+    },
   },
   {
     id: "feeConfig",
@@ -854,24 +964,55 @@ const TARGETS: Target[] = [
         readCotiMother(pairedCotiChainId(ctx)),
         `chains.${pairedCotiChainId(ctx)}.cotiMother`
       );
+      const portalOracle = resolvePortalOracle(chainCfg);
+      const oracleAddr = portalOracle && isAddr(portalOracle) ? (portalOracle as Address) : zeroAddress;
+      if (oracleAddr === zeroAddress) {
+        console.log("  no portal oracle in config — factory deploys with zero; run WireFactoryOracle after PriceOracle");
+      } else {
+        console.log(`  factory constructor oracle: ${oracleAddr}`);
+      }
+      const maxFee = (1n << 128n) - 1n;
+      const owner = factoryOwner(ctx);
+      const { portalNative } = oracleTokensForChain(ctx.chainId);
       return deploySimple(ctx, "PrivacyPortalFactory", [
-        factoryOwner(ctx),
+        owner,
         ctx.inboxAddress,
         pairedCotiChainId(ctx),
         cotiMother,
         podTokenImpl,
         portalImpl,
+        owner,
+        portalNative,
+        oracleAddr,
+        0n,
+        0n,
+        maxFee,
+        0n,
+        0n,
+        maxFee,
       ]);
     },
     verifyArgs: (ctx) => {
       const chainCfg = chainCfgSync(ctx.chainId);
+      const owner = factoryOwner(ctx);
+      const maxFee = ((1n << 128n) - 1n).toString();
+      const portalOracle = resolvePortalOracle(chainCfg) ?? zeroAddress;
       return [
-        factoryOwner(ctx),
+        owner,
         ctx.inboxAddress,
         String(pairedCotiChainId(ctx)),
         readCotiMother(pairedCotiChainId(ctx)) ?? "",
         chainCfg.podTokenImplementation,
         chainCfg.portalImplementation,
+        owner,
+        oracleTokensForChain(ctx.chainId).portalNative,
+        portalOracle,
+        "0",
+        "0",
+        maxFee,
+        "0",
+        "0",
+        maxFee,
       ];
     },
   },

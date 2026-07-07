@@ -7,11 +7,13 @@ import {
   optionalEnv,
   readDeployConfig,
   resolveDeployerAddress,
+  resolvePortalOracle,
   resolveWalletAccount,
   waitMined,
   ensureGasFunds,
+  oracleTokensForChain,
 } from "../deploy-utils.js";
-import { encodeFunctionData } from "viem";
+import { encodeFunctionData, zeroAddress } from "viem";
 
 export type ConnectedNetwork = {
   viem: any;
@@ -149,9 +151,29 @@ export const allowlistFactoryOnMother = async (
 
 export const deploySourceFactory = async (
   ctx: ConnectedNetwork,
-  params: { inbox: `0x${string}`; cotiChainId: bigint; cotiMother: `0x${string}`; owner?: `0x${string}` }
+  params: {
+    inbox: `0x${string}`;
+    cotiChainId: bigint;
+    cotiMother: `0x${string}`;
+    owner?: `0x${string}`;
+    feeRecipient?: `0x${string}`;
+    priceOracle?: `0x${string}`;
+    depositFixedFee?: bigint;
+    depositPercentageBps?: bigint;
+    depositMaxFee?: bigint;
+    withdrawFixedFee?: bigint;
+    withdrawPercentageBps?: bigint;
+    withdrawMaxFee?: bigint;
+  }
 ): Promise<SourceFactoryDeployment> => {
   const owner = params.owner ?? ctx.deployer;
+  const feeRecipient = params.feeRecipient ?? owner;
+  const maxFee = (1n << 128n) - 1n;
+  const deployConfig = await readDeployConfig();
+  const chainConfig = getChainConfig(deployConfig, ctx.chainId, "source");
+  const priceOracle =
+    params.priceOracle ??
+    (resolvePortalOracle(chainConfig) as `0x${string}` | undefined);
   console.log("[privacyPortal] deploying PrivacyPortal implementation...");
   const portalImplementation = await ctx.viem.deployContract("PrivacyPortal", [], {
     client: { public: ctx.publicClient, wallet: ctx.walletClient },
@@ -165,6 +187,7 @@ export const deploySourceFactory = async (
   console.log(`[privacyPortal] PodErc20MintableInitializable implementation=${podTokenImplementation.address}`);
 
   console.log("[privacyPortal] deploying PrivacyPortalFactory...");
+  const { portalNative } = oracleTokensForChain(ctx.chainId);
   const factory = await ctx.viem.deployContract(
     "PrivacyPortalFactory",
     [
@@ -174,6 +197,15 @@ export const deploySourceFactory = async (
       params.cotiMother,
       podTokenImplementation.address,
       portalImplementation.address,
+      feeRecipient,
+      portalNative,
+      params.priceOracle ?? priceOracle ?? zeroAddress,
+      params.depositFixedFee ?? 0n,
+      params.depositPercentageBps ?? 0n,
+      params.depositMaxFee ?? maxFee,
+      params.withdrawFixedFee ?? 0n,
+      params.withdrawPercentageBps ?? 0n,
+      params.withdrawMaxFee ?? maxFee,
     ],
     { client: { public: ctx.publicClient, wallet: ctx.walletClient } }
   );
@@ -222,6 +254,14 @@ export const createSourcePortalAndPToken = async (
   const pToken = await factory.read.pTokenForUnderlying([params.underlying]);
   console.log(`[privacyPortal] PrivacyPortal=${portal}`);
   console.log(`[privacyPortal] PoD pToken=${pToken}`);
+
+  const portalContract = await ctx.viem.getContractAt("PrivacyPortal", portal, {
+    client: { public: ctx.publicClient, wallet: ctx.walletClient },
+  });
+  const [depositPortalFee] = await portalContract.read.estimateDepositFees([1n]);
+  const [withdrawPortalFee] = await portalContract.read.estimateWithdrawFees([1n]);
+  console.log(`[privacyPortal] estimateDepositPortalFee(1)=${depositPortalFee}`);
+  console.log(`[privacyPortal] estimateWithdrawPortalFee(1)=${withdrawPortalFee}`);
 
   if (params.cotiMother && params.cotiCtx) {
     await waitForMotherRegistration({
