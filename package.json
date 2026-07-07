@@ -12,7 +12,7 @@
     "compile": "hardhat compile",
     "deploy:full-testnet": "hardhat run scripts/deploy-full-testnet.ts",
     "deploy:full-testnet:avax": "SOURCE_NETWORK=avalancheFuji hardhat run scripts/deploy-full-testnet.ts",
-    "deploy:cli": "hardhat compile && node --import tsx scripts/deploy-cli.ts",
+    "deploy:cli": "npm run link:contracts && hardhat compile && node --import tsx scripts/deploy-cli.ts",
     "deploy:mpc-executor": "hardhat run scripts/deploy-mpc-executor.ts",
     "deploy:examples:source": "hardhat run scripts/deploy-examples-source.ts",
     "deploy:examples:coti": "hardhat run scripts/deploy-examples-coti.ts",

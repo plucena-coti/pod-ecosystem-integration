@@ -828,17 +828,6 @@ export const deployPodOracleStack = async (
   const remoteSpot = manualLegs?.remoteUsdSpot ?? manualLegs?.cotiUsdSpot ?? oracleConfig?.cotiUsdSpot;
   const localSpot = manualLegs?.localUsdSpot;
 
-  if (feeds.manualLeg === "local" || feeds.manualLeg === "both") {
-    const peg = localSpot ? usdPerWholeToken18(localSpot) : localUsd18;
-    const h = await podOracle.write.setLocalTokenPriceUSD([peg], writeOpts);
-    await waitMined(publicClient, h);
-  }
-  if (feeds.manualLeg === "remote" || feeds.manualLeg === "both") {
-    const peg = remoteSpot ? usdPerWholeToken18(remoteSpot) : remoteUsd18;
-    const h = await podOracle.write.setRemoteTokenPriceUSD([peg], writeOpts);
-    await waitMined(publicClient, h);
-  }
-
   const usdc = usdcUnderlyingForChain(chainId);
   const usdcCfg = resolveOracleFeeds(chainId, oracleConfig).collateral.USDC;
   if (usdc && usdcCfg?.pegUsd) {
@@ -850,12 +839,38 @@ export const deployPodOracleStack = async (
     await waitMined(publicClient, h);
   }
 
+  // Refresh live feeds before manual inbox legs: setLocal/RemoteTokenPriceUSD updates
+  // lastFetchTimestamp and would block refreshCache while fetchInterval is active.
   if (feeds.localFeed !== zeroAddress || feeds.remoteFeed !== zeroAddress || adapterType === "band") {
     const h = await podOracle.write.refreshCache([], writeOpts);
     await waitMined(publicClient, h);
   }
 
-  const [localStored, remoteStored] = await podOracle.read.getPricesUSD();
+  if (feeds.manualLeg === "local" || feeds.manualLeg === "both") {
+    const peg = localSpot ? usdPerWholeToken18(localSpot) : localUsd18;
+    const h = await podOracle.write.setLocalTokenPriceUSD([peg], writeOpts);
+    await waitMined(publicClient, h);
+  }
+  if (feeds.manualLeg === "remote" || feeds.manualLeg === "both") {
+    const peg = remoteSpot ? usdPerWholeToken18(remoteSpot) : remoteUsd18;
+    const h = await podOracle.write.setRemoteTokenPriceUSD([peg], writeOpts);
+    await waitMined(publicClient, h);
+  }
+
+  let [localStored, remoteStored] = await podOracle.read.getPricesUSD();
+  if (localStored === 0n && feeds.manualLeg !== "local" && feeds.manualLeg !== "both") {
+    const peg = localSpot ? usdPerWholeToken18(localSpot) : localUsd18;
+    const h = await podOracle.write.setLocalTokenPriceUSD([peg], writeOpts);
+    await waitMined(publicClient, h);
+    localStored = peg;
+  }
+  if (remoteStored === 0n && feeds.manualLeg !== "remote" && feeds.manualLeg !== "both") {
+    const peg = remoteSpot ? usdPerWholeToken18(remoteSpot) : remoteUsd18;
+    const h = await podOracle.write.setRemoteTokenPriceUSD([peg], writeOpts);
+    await waitMined(publicClient, h);
+    remoteStored = peg;
+  }
+
   if (localStored === 0n || remoteStored === 0n) {
     throw new Error(
       `PoDPriceOracle legs not seeded (local=${localStored} remote=${remoteStored} chainId=${chainId})`

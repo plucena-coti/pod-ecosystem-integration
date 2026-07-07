@@ -18,11 +18,17 @@
         "maxStaleness": 3600,
         "fetchInterval": 300,
         "feeds": {
-          "inboxLocal": { "chainlink": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" },
+          "inboxLocal": {
+            "chainlink": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+          },
           "inboxRemote": {},
           "collateral": {
-            "USDC": { "pegUsd": "1" },
-            "WETH": { "chainlink": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" }
+            "USDC": {
+              "pegUsd": "1"
+            },
+            "WETH": {
+              "chainlink": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+            }
           }
         },
         "manualLegs": {},
@@ -39,14 +45,22 @@
         "maxStaleness": 86400,
         "fetchInterval": 300,
         "feeds": {
-          "inboxLocal": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" },
+          "inboxLocal": {
+            "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+          },
           "inboxRemote": {},
           "collateral": {
-            "USDC": { "pegUsd": "1" },
-            "WETH": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" }
+            "USDC": {
+              "pegUsd": "1"
+            },
+            "WETH": {
+              "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+            }
           }
         },
-        "manualLegs": { "remoteUsdSpot": "0.01272522" },
+        "manualLegs": {
+          "remoteUsdSpot": "0.01272522"
+        },
         "consumers": {
           "inbox": "",
           "privacyPortalFactory": ""
@@ -71,7 +85,7 @@
     },
     "43113": {
       "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
-      "priceOracle": "0xbf615045803edb0dbb2c9b9afedcd782c383a09b",
+      "priceOracle": "",
       "oracle": {
         "adapter": "chainlink",
         "liveAdapter": "",
@@ -79,14 +93,22 @@
         "maxStaleness": 86400,
         "fetchInterval": 300,
         "feeds": {
-          "inboxLocal": { "chainlink": "0x0A77230d17318075983913bC2145DB16C7366156" },
+          "inboxLocal": {
+            "chainlink": "0x0A77230d17318075983913bC2145DB16C7366156"
+          },
           "inboxRemote": {},
           "collateral": {
-            "USDC": { "pegUsd": "1" },
-            "WAVAX": { "chainlink": "0x0A77230d17318075983913bC2145DB16C7366156" }
+            "USDC": {
+              "pegUsd": "1"
+            },
+            "WAVAX": {
+              "chainlink": "0x0A77230d17318075983913bC2145DB16C7366156"
+            }
           }
         },
-        "manualLegs": { "remoteUsdSpot": "0.01272522" },
+        "manualLegs": {
+          "remoteUsdSpot": "0.01272522"
+        },
         "consumers": {
           "inbox": "",
           "privacyPortalFactory": ""
@@ -109,24 +131,24 @@
         }
       },
       "mpcAdder": "0xf51c789e4c60d33a2abcfd656e607724f56aaf0d",
-      "portalImplementation": "0x01dee3b8046a94896fe97d531aa2019ea2557ce3",
-      "podTokenImplementation": "0x0c8ec0f93cae026db214755388d2c41c8b5be08d",
-      "privacyPortalFactory": "0x5230856b5ce21ee5efdd113f8d4849a4b02d3a57",
+      "portalImplementation": "0x041ce0750c07638267bea9902c59554d3f4c9d4f",
+      "podTokenImplementation": "0xcee95959573618ee8464526c591fe70ae56ab293",
+      "privacyPortalFactory": "0xcf06fbf94af5e9eceb15aa1ba6458b72521424fd",
       "privacyPortalTokens": {
         "pMTT": {
           "underlying": "0x328e70e1c52662cd5f19f824fcb8b463d77a6686",
-          "portal": "0x9a82B356c9f7F59aE2c04200358122eb99aE6364",
-          "pToken": "0xc1258E5C04A6933940105FE94cC9A4C2439d3402"
+          "portal": "0x64D99D761aC68D1a495B4f7E5bE7277586EDFE78",
+          "pToken": "0x8F34570CEAD49273D5DA8A0E25e728eCC28af267"
         },
         "pUSDC": {
           "underlying": "0x5425890298aed601595a70AB815c96711a31Bc65",
-          "portal": "0x32146Ce8a96F2b0102c5C0f27e45E53eA30ef18B",
-          "pToken": "0xAd40C2E98ef9d37827F5206D0a6641c29f2247c5"
+          "portal": "0x956D8994a56F65d2fF1F9b09565857a09374D852",
+          "pToken": "0x4C8dD09336BB7A219bef9448914a9E4621cE3645"
         },
         "pWAVAX": {
           "underlying": "0xd00ae08403B9bbb9124bB305C09058E32C39A48c",
-          "portal": "0xdf75091D4AF11b94FA318eeBC6CEBC106899E25C",
-          "pToken": "0x44392E67f6Fc5179BD25302519b1B85B87afc5D8"
+          "portal": "0x25E7a1BddF4b9696F19A726Cb2Ce550467527e90",
+          "pToken": "0xe7956aDaC668b563Dc77eD29C5E7A4Ef5edFB3FB"
         }
       }
     },
@@ -147,7 +169,9 @@
           "inboxLocal": {},
           "inboxRemote": {},
           "collateral": {
-            "USDC": { "pegUsd": "1" }
+            "USDC": {
+              "pegUsd": "1"
+            }
           }
         },
         "manualLegs": {
@@ -180,46 +204,56 @@
     },
     "11155111": {
       "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
-      "priceOracle": "0x8ddd7ea56463ca559f81756f60e624f5df499593",
+      "priceOracle": "0x7eecdceec31d285aee99c7960b405f63593903d1",
       "oracle": {
-        "adapter": "chainlink",
-        "liveAdapter": "",
-        "bandStdRef": "",
-        "maxStaleness": 86400,
+        "adapter": "band",
+        "liveAdapter": "0x9d6ed5b1f4162aeca9140a61e9e7a5ca7043c3dd",
+        "bandStdRef": "0x8c064bCf7C0DA3B3b090BAbFE8f3323534D84d68",
+        "maxStaleness": 0,
         "fetchInterval": 300,
         "feeds": {
-          "inboxLocal": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" },
+          "inboxLocal": {
+            "bandBase": "ETH",
+            "bandQuote": "USDC"
+          },
           "inboxRemote": {},
           "collateral": {
-            "USDC": { "pegUsd": "1" },
-            "WETH": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" }
+            "USDC": {
+              "pegUsd": "1"
+            },
+            "WETH": {
+              "bandBase": "ETH",
+              "bandQuote": "USDC"
+            }
           }
         },
-        "manualLegs": { "remoteUsdSpot": "0.01272522" },
+        "manualLegs": {
+          "remoteUsdSpot": "0.01272522"
+        },
         "consumers": {
           "inbox": "",
           "privacyPortalFactory": ""
         }
       },
       "mpcAdder": "0x06008d120dce48cc5ab2121c0a18d3ec49585fae",
-      "portalImplementation": "0x4ae2f5afe06ab925814c90621d223982be836c7b",
-      "podTokenImplementation": "0x21dff1643ee00934c4e6106bc023964084ee63d0",
-      "privacyPortalFactory": "0x3f533f4593fbe567f6a9feda8107d1a5f675699b",
+      "portalImplementation": "0x4cf43909aa16c85f78606cdda96a88494ca43194",
+      "podTokenImplementation": "0x69cb293b7cca85db7bb68b32090c684b9282b366",
+      "privacyPortalFactory": "0xe26a0db663a9d546ab4dfd02d8b4305e3df9ce73",
       "privacyPortalTokens": {
         "pMTT": {
           "underlying": "0xd3f5c63f4D87D2235b295FbA83351d31d0eD1BeE",
-          "portal": "0xDb71e6a73DA10Efc648C261E8B1f9d5babd25B08",
-          "pToken": "0xb4AbD430486fBc50580354c10e3959BC7fE5E6e3"
+          "portal": "0xaCD7fE838354Dd72147d9c387558477D7d4D6514",
+          "pToken": "0x46f9f46971f6bEc21Fe5d42909Ef99D1D2af43c4"
         },
         "pUSDC": {
           "underlying": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-          "portal": "0xFA32bB6399cbC60A9A8d1535745dd063571a79Ed",
-          "pToken": "0x2749FE484a0E9555715e66638baF1e9a9e799E37"
+          "portal": "0xDc0b0e5681C17A8449Baf5aBB130d7664Bb56d5a",
+          "pToken": "0xc727D2Ab43bF0d4cab75FD5C046BA38899ca988a"
         },
         "pWETH": {
           "underlying": "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9",
-          "portal": "0xfFbF6F92d51F8a0f86Cd367e9C7a974221dD38F2",
-          "pToken": "0xDEA0e780134d15F51aC36B644F41d3dFD104E80A"
+          "portal": "0xa4efc209144565126c034dfD23208f040748923f",
+          "pToken": "0x28f6CFc45c3D4C13E6BAB034cb05278Db496b9d6"
         }
       },
       "feeConfig": {

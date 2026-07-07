@@ -23,6 +23,7 @@ import {
   getViemClients,
   oracleConfigFromChain,
   oracleAdapterType,
+  bandStdRefForChain,
   recordOracleDeploy,
   resolveConsumerOracle,
   resolvePortalOracle,
@@ -600,6 +601,16 @@ const TARGETS: Target[] = [
     deploy: async (ctx) => {
       const chainCfg = chainCfgSync(ctx.chainId);
       const oracleConfig = oracleConfigFromChain(chainCfg);
+      const adapter = oracleAdapterType(oracleConfig);
+      if (adapter === "plain") {
+        console.log("  adapter: plain → PriceOracle (manual USD legs, no live feed adapter)");
+      } else if (adapter === "band") {
+        console.log(
+          `  adapter: band → BandLiveOracle + PoDPriceOracle (std ref ${bandStdRefForChain(ctx.chainId, oracleConfig)})`
+        );
+      } else {
+        console.log("  adapter: chainlink → ChainlinkLiveOracle + PoDPriceOracle");
+      }
       const { address, contractName, liveAdapter } = await deployOracleForChain({
         viem: ctx.viem,
         publicClient: ctx.publicClient,
