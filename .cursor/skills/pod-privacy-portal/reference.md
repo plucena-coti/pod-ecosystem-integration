@@ -54,30 +54,52 @@ estimateFee() returns (uint256 totalFeeWei, uint256 targetFeeWei, uint256 callba
 
 Use:
 
-- `totalFeeWei` as the `value` for one pToken async request.
+- `totalFeeWei` as the PoD fee forwarded in the same portal tx.
 - `callbackFeeWei` as the callback-fee argument.
 
-Deposit has one pToken request:
+Portal protocol fees are separate. Use portal views:
 
-- ERC20 underlying: `PrivacyPortal.deposit(recipient, amount, mintCallbackFee)` with `value = totalFeeWei`. User must `approve` the portal first.
-- Native-wrapped underlying (WETH/WAVAX portals): `PrivacyPortal.depositNative(recipient, amount, mintCallbackFee)` with `value = amount + totalFeeWei`. No approve or separate wrap tx.
+```solidity
+estimateDepositFees(amount) -> (portalFee, usedDynamicPricing, mintTotalFee, mintCallbackFee)
+estimateWithdrawFees(amount) -> (portalFee, usedDynamicPricing, transferTotalFee, transferCallbackFee)
+estimateBatchBurnFees(amount) -> (burnTotalFee, burnCallbackFee)  // keeper/admin only
+```
 
-Check `nativeWrappedUnderlying()` on the portal to pick the deposit path.
+### USD oracle (PoDPriceOracle + live adapter)
 
-Withdraw has two pToken requests:
+Inbox and portal factory share one `PoDPriceOracle` per chain, registered with a live adapter (`BandLiveOracle` or `ChainlinkLiveOracle`):
 
-- Transfer request: user -> portal.
-- Burn request: portal burns custody pTokens after release.
+| Consumer | Price source | When |
+|----------|--------------|------|
+| **Inbox** | Cached `localTokenPriceUSD` / `remoteTokenPriceUSD` | Fee validation reads cache; `refreshCache()` refreshes via registered adapter (interval-gated) |
+| **Portal** | **Live** via `configuredOracle.readPrice` | Every deposit/withdraw with `percentageBps > 0` via `oracle.getLivePrices(native, collateral)` |
 
-For withdraw, quote twice. If no operation-specific estimator exists, use `estimateFee()` for both:
+Configuration (`deployConfig.chains[chainId].oracle`):
 
-- `transferFee = totalFeeWei`
-- `transferCallbackFee = callbackFeeWei`
-- `burnFee = totalFeeWei`
-- `burnCallbackFee = callbackFeeWei`
-- `value = transferFee + burnFee`
+- **`adapter`:** `"band"` \| `"chainlink"` \| `"plain"` — which live adapter to deploy (`plain` = manual `PriceOracle` only).
+- **`liveAdapter`:** deployed adapter address (optional; filled by deploy CLI).
+- **`feeds`:** per-key feed config on the adapter (`inboxLocal`, `inboxRemote`, `collateral.USDC`, …). `inboxLocal` is the local gas token (inbox cache + portal native fees).
+- **`pegUsd`** on a collateral entry → `setCollateralPriceUSD` on `PoDPriceOracle` (e.g. USDC $1).
+- **`consumers.inbox` / `consumers.privacyPortalFactory`:** optional oracle address overrides (default: `priceOracle`).
 
-Add a small frontend buffer only if your app has observed rounding issues, but keep the callback-fee args equal to the quote returned by the contract.
+- **Keeper (inbox only):** `oracle.refreshCache()` — portal does **not** need keeper sync.
+- **User portal txs:** one live `getLivePrices` call per fee validation.
+
+Live upgrade: deploy new adapter + `PoDPriceOracle`, seed feeds, `inbox.setPriceOracle` + `factory.setPriceOracle`.
+
+Deposit (one pToken mint + portal fee):
+
+- ERC20: `deposit(recipient, amount, portalFee, mintCallbackFee)` with `value = mintTotalFee + portalFee`. User must `approve` the portal first.
+- Native-wrapped (WETH/WAVAX): `depositNative(recipient, amount, portalFee, mintCallbackFee)` with `value = amount + mintTotalFee + portalFee`. No separate wrap tx.
+
+Check `nativeWrappedUnderlying()` to pick the deposit path.
+
+Withdraw (one pToken transfer + portal fee; **no inline burn**):
+
+- `requestWithdrawWithPermit(recipient, amount, portalFee, transferFee, transferCallbackFee, permit...)` with `value = transferTotalFee + portalFee`.
+- After release, pTokens stay in portal custody until the portal owner runs `burnAccumulatedPTokens(amount, burnCallbackFee)` with `value = burnTotalFee` (separate keeper tx).
+
+Native-wrapped portals release **wrapped ERC20** (WETH/WAVAX) on withdraw; they do not unwrap to native coin in the portal.
 
 ## PrivacyPortal
 

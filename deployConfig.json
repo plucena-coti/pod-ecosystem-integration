@@ -11,10 +11,47 @@
       "inbox": "",
       "portalImplementation": "",
       "podTokenImplementation": "",
-      "privacyPortalFactory": ""
+      "privacyPortalFactory": "",
+      "priceOracle": "",
+      "oracle": {
+        "adapter": "chainlink",
+        "maxStaleness": 3600,
+        "fetchInterval": 300,
+        "feeds": {
+          "inboxLocal": { "chainlink": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" },
+          "inboxRemote": {},
+          "collateral": {
+            "USDC": { "pegUsd": "1" },
+            "WETH": { "chainlink": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" }
+          }
+        },
+        "manualLegs": {},
+        "consumers": {
+          "inbox": "",
+          "privacyPortalFactory": ""
+        }
+      }
     },
     "31337": {
       "priceOracle": "",
+      "oracle": {
+        "adapter": "chainlink",
+        "maxStaleness": 86400,
+        "fetchInterval": 300,
+        "feeds": {
+          "inboxLocal": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" },
+          "inboxRemote": {},
+          "collateral": {
+            "USDC": { "pegUsd": "1" },
+            "WETH": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" }
+          }
+        },
+        "manualLegs": { "remoteUsdSpot": "0.01272522" },
+        "consumers": {
+          "inbox": "",
+          "privacyPortalFactory": ""
+        }
+      },
       "feeConfig": {
         "local": {
           "constantFee": "0",
@@ -35,6 +72,26 @@
     "43113": {
       "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
       "priceOracle": "0xbf615045803edb0dbb2c9b9afedcd782c383a09b",
+      "oracle": {
+        "adapter": "chainlink",
+        "liveAdapter": "",
+        "bandStdRef": "",
+        "maxStaleness": 86400,
+        "fetchInterval": 300,
+        "feeds": {
+          "inboxLocal": { "chainlink": "0x0A77230d17318075983913bC2145DB16C7366156" },
+          "inboxRemote": {},
+          "collateral": {
+            "USDC": { "pegUsd": "1" },
+            "WAVAX": { "chainlink": "0x0A77230d17318075983913bC2145DB16C7366156" }
+          }
+        },
+        "manualLegs": { "remoteUsdSpot": "0.01272522" },
+        "consumers": {
+          "inbox": "",
+          "privacyPortalFactory": ""
+        }
+      },
       "feeConfig": {
         "local": {
           "constantFee": "0",
@@ -82,6 +139,26 @@
       "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
       "cotiExecutor": "0x68e151b78d51cea01eef6ee354579e044606a739",
       "priceOracle": "0xe1afeda542d1b9003df0e133187f845dea8b1ba8",
+      "oracle": {
+        "adapter": "plain",
+        "maxStaleness": 86400,
+        "fetchInterval": 300,
+        "feeds": {
+          "inboxLocal": {},
+          "inboxRemote": {},
+          "collateral": {
+            "USDC": { "pegUsd": "1" }
+          }
+        },
+        "manualLegs": {
+          "localUsdSpot": "0.01272522",
+          "remoteUsdSpot": "2103.41"
+        },
+        "consumers": {
+          "inbox": "",
+          "privacyPortalFactory": ""
+        }
+      },
       "pErc20Coti": "",
       "cotiMother": "0x293daf267bf657b0bae870a0ce8cd59f1e5eb32a",
       "feeConfig": {
@@ -104,6 +181,26 @@
     "11155111": {
       "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
       "priceOracle": "0x8ddd7ea56463ca559f81756f60e624f5df499593",
+      "oracle": {
+        "adapter": "chainlink",
+        "liveAdapter": "",
+        "bandStdRef": "",
+        "maxStaleness": 86400,
+        "fetchInterval": 300,
+        "feeds": {
+          "inboxLocal": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" },
+          "inboxRemote": {},
+          "collateral": {
+            "USDC": { "pegUsd": "1" },
+            "WETH": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" }
+          }
+        },
+        "manualLegs": { "remoteUsdSpot": "0.01272522" },
+        "consumers": {
+          "inbox": "",
+          "privacyPortalFactory": ""
+        }
+      },
       "mpcAdder": "0x06008d120dce48cc5ab2121c0a18d3ec49585fae",
       "portalImplementation": "0x4ae2f5afe06ab925814c90621d223982be836c7b",
       "podTokenImplementation": "0x21dff1643ee00934c4e6106bc023964084ee63d0",

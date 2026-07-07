@@ -29,6 +29,14 @@ export const CANONICAL_UNDERLYING: Record<number, Record<string, `0x${string}`>>
     /** Avalanche canonical WAVAX (18 decimals). Wrap via `deposit()` payable. */
     WAVAX: "0xd00ae08403B9bbb9124bB305C09058E32C39A48c",
   },
+  /** Ethereum mainnet */
+  1: {
+    USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  },
+  /** Avalanche C-Chain mainnet */
+  43114: {
+    USDC: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9fcd248",
+  },
 };
 
 export const canonicalUnderlying = (chainId: number, symbol: string): `0x${string}` | undefined =>

@@ -3,7 +3,7 @@ import { before, describe, it } from "node:test";
 import { network } from "hardhat";
 import { zeroHash } from "viem";
 import {
-  burnAccumulatedDebt,
+  burnAccumulatedPTokens,
   completePTokenTransferCallback,
   deployPortalFactory,
   deployDirectPortalContext,
@@ -11,6 +11,7 @@ import {
   depositPublicToken,
   depositNativeToken,
   deployNativePortalContext,
+  DEFAULT_POD_FEE,
   expectDepositMintSubmitted,
   expectWithdrawTransferSubmitted,
   fundUserAndApprovePortal,
@@ -18,7 +19,6 @@ import {
   requestWithdraw,
   seedNativePortalVault,
   seedPortalVault,
-  setBurnSubmissionFailure,
   triggerWithdrawalRelease,
   zeroAddress,
   type PortalTestContext,
@@ -56,7 +56,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     await expectWithdrawTransferSubmitted(ctx, 300n);
   });
 
-  it("withdraw callback releases underlying and submits burn", async function () {
+  it("withdraw callback releases underlying and queues pTokens for batch burn", async function () {
     ctx = await freshPortal();
     await seedPortalVault(ctx, 500n);
     await requestWithdraw(ctx, 300n);
@@ -65,8 +65,8 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     await completePTokenTransferCallback(ctx);
 
     assert.equal(await ctx.underlying.read.balanceOf([ctx.recipient]), beforeRecipient + 300n);
-    assert.equal(await ctx.pToken.read.burnedAmount(), 300n);
-    assert.equal(await ctx.portal.read.burnDebtAmount(), 0n);
+    assert.equal(await ctx.pToken.read.burnedAmount(), 0n);
+    assert.equal(await ctx.portal.read.pendingBurnAmount(), 300n);
   });
 
   it("manual withdrawal trigger releases after pToken transfer succeeds", async function () {
@@ -79,8 +79,19 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     await triggerWithdrawalRelease(ctx, withdrawalId);
 
     assert.equal(await ctx.underlying.read.balanceOf([ctx.recipient]), beforeRecipient + 300n);
-    assert.equal(await ctx.pToken.read.burnedAmount(), 300n);
-    assert.equal(await ctx.portal.read.burnDebtAmount(), 0n);
+    assert.equal(await ctx.portal.read.pendingBurnAmount(), 300n);
+  });
+
+  it("owner batch burn clears pendingBurnAmount", async function () {
+    ctx = await freshPortal();
+    await seedPortalVault(ctx, 500n);
+    await requestWithdraw(ctx, 125n);
+    await completePTokenTransferCallback(ctx);
+
+    assert.equal(await ctx.portal.read.pendingBurnAmount(), 125n);
+    await burnAccumulatedPTokens(ctx, 125n);
+    assert.equal(await ctx.portal.read.pendingBurnAmount(), 0n);
+    assert.equal(await ctx.pToken.read.burnedAmount(), 125n);
   });
 
   it("manual withdrawal trigger rejects before pToken transfer succeeds", async function () {
@@ -94,10 +105,9 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     );
   });
 
-  it("records burn debt when burn submission fails and callback retry does not release twice", async function () {
+  it("callback retry does not release twice", async function () {
     ctx = await freshPortal();
     await seedPortalVault(ctx, 500n);
-    await setBurnSubmissionFailure(ctx, true);
     await requestWithdraw(ctx, 125n);
 
     const beforeRecipient = await ctx.underlying.read.balanceOf([ctx.recipient]);
@@ -105,11 +115,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     await assert.rejects(completePTokenTransferCallback(ctx));
 
     assert.equal(await ctx.underlying.read.balanceOf([ctx.recipient]), beforeRecipient + 125n);
-    assert.equal(await ctx.portal.read.burnDebtAmount(), 125n);
-
-    await setBurnSubmissionFailure(ctx, false);
-    await burnAccumulatedDebt(ctx, 125n);
-    assert.equal(await ctx.portal.read.burnDebtAmount(), 0n);
+    assert.equal(await ctx.portal.read.pendingBurnAmount(), 125n);
   });
 
   it("rejects portal callbacks that do not come from the configured pToken", async function () {
@@ -153,8 +159,8 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
 
     await assert.rejects(
       factoryPortal.write.requestWithdrawWithPermit(
-        [ctx.recipient, 1n, 100n, 11n, 200n, 22n, 999_999_999n, 27, zeroHash, zeroHash],
-        { account: owner, value: 300n }
+        [ctx.recipient, 1n, 0n, DEFAULT_POD_FEE, 100n, 999_999_999n, 27, zeroHash, zeroHash],
+        { account: owner, value: DEFAULT_POD_FEE }
       ),
       /WithdrawalsPaused/
     );
@@ -172,7 +178,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     await factory.write.setDepositsPaused([true], { account: owner });
 
     await assert.rejects(
-      factoryPortal.write.deposit([owner, 50n, 77n], { account: owner, value: 1_000n }),
+      factoryPortal.write.deposit([owner, 50n, 0n, 77n], { account: owner, value: DEFAULT_POD_FEE }),
       /DepositsPaused/
     );
   });
@@ -191,15 +197,15 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
 
   it("depositNative wraps native coin and submits a public pToken mint", async function () {
     const nativeCtx = await deployNativePortalContext({ viem, publicClient, wallet, owner });
-    const mintFee = 1_000n;
+    const mintFee = DEFAULT_POD_FEE;
 
     await depositNativeToken(nativeCtx, 250n, { mintFee });
 
     assert.equal(await nativeCtx.underlying.read.balanceOf([nativeCtx.portal.address]), 250n);
-    await expectDepositMintSubmitted(nativeCtx, { amount: 250n, fee: mintFee });
+    await expectDepositMintSubmitted(nativeCtx, { amount: 250n, mintFee });
   });
 
-  it("native portal unwraps to recipient on withdraw release", async function () {
+  it("native portal releases wrapped underlying on withdraw release", async function () {
     const nativeCtx = await deployNativePortalContext({ viem, publicClient, wallet, owner });
     await seedNativePortalVault(nativeCtx, 500n);
     await requestWithdraw(nativeCtx, 300n);
@@ -207,7 +213,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     const recipientEthBefore = await publicClient.getBalance({ address: nativeCtx.recipient });
     await completePTokenTransferCallback(nativeCtx);
 
-    assert.equal(await nativeCtx.underlying.read.balanceOf([nativeCtx.recipient]), 0n);
-    assert.equal(await publicClient.getBalance({ address: nativeCtx.recipient }), recipientEthBefore + 300n);
+    assert.equal(await nativeCtx.underlying.read.balanceOf([nativeCtx.recipient]), 300n);
+    assert.equal(await publicClient.getBalance({ address: nativeCtx.recipient }), recipientEthBefore);
   });
 });

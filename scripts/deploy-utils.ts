@@ -1,12 +1,22 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
-import { defineChain, parseUnits, zeroAddress, createPublicClient, http, type PublicClient, type WalletClient } from "viem";
+import {
+  defineChain,
+  parseUnits,
+  zeroAddress,
+  createPublicClient,
+  http,
+  type PublicClient,
+  type WalletClient,
+} from "viem";
 import {
   deployInboxDeterministic as deployInboxViaCreateX,
   type DeployInboxDeterministicResult,
   type InboxArtifact,
 } from "./createx.js";
+import { MANUAL_USD_PEG_18, usdcUnderlyingForChain } from "./privacyPortal/oracle-pegs.js";
+import { canonicalUnderlying } from "./privacyPortal/canonical-collateral.js";
 
 /** Etherscan requires the full solc commit suffix; Hardhat build-info may omit it. */
 export const patchBuildInfoSolcLongVersion = (longVersion = "0.8.28+commit.7893614a") => {
@@ -100,6 +110,62 @@ export type FeeConfigJson = {
   bufferRatioX10000: string | number;
 };
 
+/** Oracle adapter selector in `deployConfig.chains[chainId].oracle`. */
+export type OracleAdapterJson = "band" | "chainlink" | "plain";
+
+export type OracleFeedEntryJson = {
+  chainlink?: string;
+  bandBase?: string;
+  bandQuote?: string;
+  /** Manual USD peg on {PoDPriceOracle} (whole token, e.g. `"1"`). */
+  pegUsd?: string;
+};
+
+/** Oracle options stored under `deployConfig.chains[chainId].oracle`. */
+export type OracleConfigJson = {
+  /** Live feed backend to deploy (`chainlink` default). */
+  adapter?: OracleAdapterJson;
+  /** @deprecated Use `adapter: "plain"`. */
+  type?: "chainlink" | "plain";
+  /** Deployed {BandLiveOracle} or {ChainlinkLiveOracle} address. */
+  liveAdapter?: string;
+  bandStdRef?: string;
+  maxStaleness?: string | number;
+  fetchInterval?: string | number;
+  feeds?: {
+    inboxLocal?: OracleFeedEntryJson;
+    inboxRemote?: OracleFeedEntryJson;
+    /** @deprecated Same as `inboxLocal`; merged at resolve time. */
+    portalNative?: OracleFeedEntryJson;
+    collateral?: Record<string, OracleFeedEntryJson>;
+  };
+  manualLegs?: {
+    localUsdSpot?: string;
+    remoteUsdSpot?: string;
+    cotiUsdSpot?: string;
+  };
+  consumers?: {
+    inbox?: string;
+    privacyPortalFactory?: string;
+  };
+  /** @deprecated Legacy — mapped into `feeds` when `feeds` is omitted. */
+  native?: { bandBase?: string; bandQuote?: string; chainlinkFeed?: string };
+  /** @deprecated Legacy — mapped into `feeds.collateral` when omitted. */
+  collateral?: Record<string, OracleFeedEntryJson>;
+  /** @deprecated Use `manualLegs.remoteUsdSpot`. */
+  cotiUsdSpot?: string;
+};
+
+import { oracleTokensForChain } from "./oracle-tokens.js";
+
+export { oracleTokensForChain, ORACLE_REMOTE_COTI_TOKEN } from "./oracle-tokens.js";
+
+export const oracleAdapterType = (oracleConfig?: OracleConfigJson): OracleAdapterJson => {
+  if (oracleConfig?.adapter) return oracleConfig.adapter;
+  if (oracleConfig?.type === "plain") return "plain";
+  return "chainlink";
+};
+
 type DeployConfig = {
   chains: Record<
     string,
@@ -107,8 +173,10 @@ type DeployConfig = {
       inbox?: string;
       cotiExecutor?: string;
       priceOracle?: string;
+      oracle?: OracleConfigJson;
       /** Min-fee templates for this chain's inbox (local = this chain, remote = paired chain). */
       feeConfig?: { local: FeeConfigJson; remote: FeeConfigJson };
+      [key: string]: unknown;
     }
   >;
 };
@@ -162,6 +230,149 @@ export const oracleUsdPricesForChain = (chainId: number): OracleUsdLegs => {
 
 /** @deprecated Use {@link oracleUsdPricesForChain} */
 export const oracleLegsForChain = (chainId: number): OracleUsdLegs => oracleUsdPricesForChain(chainId);
+
+/** Chainlink Data Feed addresses (verify at https://docs.chain.link/data-feeds/price-feeds/addresses). */
+export const CHAINLINK_FEEDS = {
+  sepoliaEthUsd: "0x694AA1769357215DE4FAC081bf1f309aDC325306" as const,
+  sepoliaBtcUsd: "0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43" as const,
+  sepoliaUsdcUsd: "0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E" as const,
+  mainnetEthUsd: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" as const,
+  fujiAvaxUsd: "0x0A77230d17318075983913bC2145DB16C7366156" as const,
+  mainnetAvaxUsd: "0x0A77230d17318075983913bC2145DB16C7366156" as const,
+} as const;
+
+/** Band StdReference defaults (override via `oracle.bandStdRef` in deployConfig). */
+export const BAND_STD_REF_BY_CHAIN: Partial<Record<number, `0x${string}`>> = {
+  1: "0xDA7c0dC50a0A53AeE6Cac7E059061B7529743F49",
+  11155111: "0x8c064bCf7C0DA3B3b090BAbFE8f3323534D84d68",
+  43113: "0xDA7c0dC50a0A53AeE6Cac7E059061B7529743F49",
+  43114: "0xDA7c0dC50a0A53AeE6Cac7E059061B7529743F49",
+};
+
+/** Pack a short symbol (e.g. `ETH`, `USD`) into bytes32 for on-chain feed config. */
+export const packBandSymbol = (symbol: string): `0x${string}` => {
+  const bytes = Buffer.alloc(32);
+  for (let i = 0; i < symbol.length && i < 32; i++) {
+    bytes[i] = symbol.charCodeAt(i);
+  }
+  return `0x${bytes.toString("hex")}` as `0x${string}`;
+};
+
+export const resolveConsumerOracle = (
+  chainCfg: Record<string, unknown>,
+  consumer: "inbox" | "privacyPortalFactory"
+): string | undefined => {
+  const oracle = chainCfg.oracle as OracleConfigJson | undefined;
+  const override = oracle?.consumers?.[consumer]?.trim();
+  if (override) return override;
+  const priceOracle = chainCfg.priceOracle;
+  return typeof priceOracle === "string" && priceOracle.trim() ? priceOracle : undefined;
+};
+
+/** Oracle address for Privacy Portal factory (constructor + setPriceOracle). */
+export const resolvePortalOracle = (chainCfg: Record<string, unknown>): string | undefined =>
+  resolveConsumerOracle(chainCfg, "privacyPortalFactory");
+
+/** Oracle address for inbox fee conversion. */
+export const resolveInboxOracle = (chainCfg: Record<string, unknown>): string | undefined =>
+  resolveConsumerOracle(chainCfg, "inbox");
+
+/** Persist {PoDPriceOracle} deploy metadata into a deployConfig chain entry. */
+export const recordOracleDeploy = (
+  chainEntry: Record<string, unknown>,
+  params: {
+    priceOracle: `0x${string}`;
+    liveAdapter?: `0x${string}`;
+    adapter: OracleAdapterJson;
+  }
+): void => {
+  chainEntry.priceOracle = params.priceOracle;
+  const oracle = (chainEntry.oracle as OracleConfigJson | undefined) ?? {};
+  oracle.adapter = params.adapter;
+  if (params.liveAdapter) {
+    oracle.liveAdapter = params.liveAdapter;
+  }
+  chainEntry.oracle = oracle;
+};
+
+export const nativeBandSymbolForChain = (chainId: number): string => {
+  if (chainId === AVALANCHE_FUJI_CHAIN_ID || chainId === 43_114) return "AVAX";
+  return "ETH";
+};
+
+export const bandStdRefForChain = (chainId: number, oracleConfig?: OracleConfigJson): `0x${string}` => {
+  const configured = oracleConfig?.bandStdRef?.trim();
+  if (configured) {
+    return configured as `0x${string}`;
+  }
+  return BAND_STD_REF_BY_CHAIN[chainId] ?? zeroAddress;
+};
+
+export type ChainlinkFeedConfig = {
+  localFeed: `0x${string}`;
+  remoteFeed: `0x${string}`;
+  manualLeg: "local" | "remote" | "both";
+  maxStalenessSeconds: bigint;
+  fetchIntervalSeconds: bigint;
+};
+
+export const chainlinkFeedsForChain = (chainId: number): ChainlinkFeedConfig => {
+  const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
+  const testnetStaleness = 86_400n;
+  const mainnetStaleness = 3_600n;
+  const fetchInterval = 300n;
+
+  if (chainId === 11155111 || chainId === 31337) {
+    return {
+      localFeed: CHAINLINK_FEEDS.sepoliaEthUsd,
+      remoteFeed: zeroAddress,
+      manualLeg: "remote",
+      maxStalenessSeconds: testnetStaleness,
+      fetchIntervalSeconds: fetchInterval,
+    };
+  }
+  if (chainId === AVALANCHE_FUJI_CHAIN_ID) {
+    return {
+      localFeed: CHAINLINK_FEEDS.fujiAvaxUsd,
+      remoteFeed: zeroAddress,
+      manualLeg: "remote",
+      maxStalenessSeconds: testnetStaleness,
+      fetchIntervalSeconds: fetchInterval,
+    };
+  }
+  if (chainId === cotiTestnetId) {
+    return {
+      localFeed: zeroAddress,
+      remoteFeed: zeroAddress,
+      manualLeg: "both",
+      maxStalenessSeconds: testnetStaleness,
+      fetchIntervalSeconds: fetchInterval,
+    };
+  }
+  if (chainId === 1) {
+    return {
+      localFeed: CHAINLINK_FEEDS.mainnetEthUsd,
+      remoteFeed: zeroAddress,
+      manualLeg: "remote",
+      maxStalenessSeconds: mainnetStaleness,
+      fetchIntervalSeconds: fetchInterval,
+    };
+  }
+  if (chainId === 43_114) {
+    return {
+      localFeed: CHAINLINK_FEEDS.mainnetAvaxUsd,
+      remoteFeed: zeroAddress,
+      manualLeg: "remote",
+      maxStalenessSeconds: mainnetStaleness,
+      fetchIntervalSeconds: fetchInterval,
+    };
+  }
+  throw new Error(
+    `Unsupported chainId ${chainId} for Chainlink feeds. ` +
+      `Use Sepolia (11155111), Fuji (${AVALANCHE_FUJI_CHAIN_ID}), COTI testnet (${cotiTestnetId}), ` +
+      `Ethereum (1), Avalanche (43114), or local (31337).`
+  );
+};
 
 /**
  * Sepolia-side fee template (variable minimum): `constantFee == 0` and all template fields non-zero.
@@ -300,6 +511,30 @@ type DeployOracleParams = {
   publicClient: unknown;
   walletClient: WalletClient;
   chainId: number;
+  oracleConfig?: OracleConfigJson;
+};
+
+export const oracleConfigFromChain = (chainCfg: Record<string, unknown>): OracleConfigJson =>
+  (chainCfg.oracle as OracleConfigJson | undefined) ?? {};
+
+export const usePlainOracleForConfig = (oracleConfig?: OracleConfigJson): boolean => {
+  if (process.env.USE_PLAIN_ORACLE === "1") return true;
+  return oracleAdapterType(oracleConfig) === "plain";
+};
+
+const manualUsdLegsForChain = (chainId: number, oracleConfig?: OracleConfigJson): OracleUsdLegs => {
+  const legs = oracleUsdPricesForChain(chainId);
+  const cotiSpot = oracleConfig?.cotiUsdSpot?.trim();
+  if (!cotiSpot) return legs;
+  const coti = usdPerWholeToken18(cotiSpot);
+  const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
+  if (chainId === 11155111 || chainId === 31337 || chainId === AVALANCHE_FUJI_CHAIN_ID) {
+    return { ...legs, remoteUsd18: coti };
+  }
+  if (chainId === cotiTestnetId) {
+    return { ...legs, localUsd18: coti };
+  }
+  return legs;
 };
 
 /**
@@ -316,6 +551,10 @@ export const deployTestnetPriceOracle = async (params: DeployOracleParams) => {
     client: { public: publicClient, wallet: walletClient },
     account: deployer,
   });
+
+  const { localToken, remoteToken } = oracleTokensForChain(chainId);
+  const h0 = await oracle.write.setInboxTokens([localToken, remoteToken], writeOpts);
+  await waitMined(publicClient, h0);
 
   const h1 = await oracle.write.setLocalTokenPriceUSD([localUsd18], writeOpts);
   await waitMined(publicClient, h1);
@@ -341,6 +580,339 @@ export const deployTestnetPriceOracle = async (params: DeployOracleParams) => {
   }
 
   return oracle as { address: `0x${string}`; read: { getPricesUSD: () => Promise<readonly [bigint, bigint]> } };
+};
+
+export type PodOracleContract = {
+  address: `0x${string}`;
+  read: {
+    getPricesUSD: () => Promise<readonly [bigint, bigint]>;
+    getLocalTokenPriceUSD: () => Promise<bigint>;
+    getLivePrice: (args: [`0x${string}`]) => Promise<bigint>;
+  };
+  write: {
+    setLocalTokenPriceUSD: (args: [bigint], options?: { account: `0x${string}`; gas?: bigint }) => Promise<`0x${string}`>;
+    setRemoteTokenPriceUSD: (args: [bigint], options?: { account: `0x${string}`; gas?: bigint }) => Promise<`0x${string}`>;
+    refreshCache: (args: [], options?: { account: `0x${string}` }) => Promise<`0x${string}`>;
+    setTokenPriceUSD: (
+      args: [`0x${string}`, bigint],
+      options?: { account: `0x${string}`; gas?: bigint }
+    ) => Promise<`0x${string}`>;
+    setInboxTokens: (
+      args: [`0x${string}`, `0x${string}`],
+      options?: { account: `0x${string}`; gas?: bigint }
+    ) => Promise<`0x${string}`>;
+    setConfiguredOracle: (args: [`0x${string}`], options?: { account: `0x${string}`; gas?: bigint }) => Promise<`0x${string}`>;
+  };
+};
+
+export type LiveAdapterContract = {
+  address: `0x${string}`;
+  write: {
+    setFeed: (...args: unknown[]) => Promise<`0x${string}`>;
+    setBandStdRef?: (args: [`0x${string}`], options?: { account: `0x${string}`; gas?: bigint }) => Promise<`0x${string}`>;
+  };
+};
+
+const maxStalenessFromConfig = (oracleConfig: OracleConfigJson | undefined, feeds: ChainlinkFeedConfig): bigint => {
+  if (oracleConfig?.maxStaleness != null && String(oracleConfig.maxStaleness).trim() !== "") {
+    return BigInt(oracleConfig.maxStaleness);
+  }
+  return feeds.maxStalenessSeconds;
+};
+
+const fetchIntervalFromConfig = (oracleConfig: OracleConfigJson | undefined, feeds: ChainlinkFeedConfig): bigint => {
+  if (oracleConfig?.fetchInterval != null && String(oracleConfig.fetchInterval).trim() !== "") {
+    return BigInt(oracleConfig.fetchInterval);
+  }
+  return feeds.fetchIntervalSeconds;
+};
+
+type ResolvedOracleFeeds = {
+  inboxLocal: OracleFeedEntryJson;
+  inboxRemote: OracleFeedEntryJson;
+  collateral: Record<string, OracleFeedEntryJson>;
+};
+
+const resolveOracleFeeds = (chainId: number, oracleConfig?: OracleConfigJson): ResolvedOracleFeeds => {
+  const chainFeeds = chainlinkFeedsForChain(chainId);
+  const nativeSymbol = nativeBandSymbolForChain(chainId);
+  const legacyNative = oracleConfig?.native;
+  const legacyCollateral = oracleConfig?.collateral ?? {};
+  const feeds = oracleConfig?.feeds;
+  const localFeedEntry =
+    feeds?.inboxLocal ??
+    feeds?.portalNative ?? {
+      chainlink: legacyNative?.chainlinkFeed ?? chainFeeds.localFeed,
+      bandBase: legacyNative?.bandBase ?? nativeSymbol,
+      bandQuote: legacyNative?.bandQuote ?? "USDC",
+    };
+
+  return {
+    inboxLocal: localFeedEntry,
+    inboxRemote: feeds?.inboxRemote ?? {
+      chainlink: chainFeeds.remoteFeed,
+    },
+    collateral: feeds?.collateral ?? legacyCollateral,
+  };
+};
+
+/** Deploy Band or Chainlink live adapter (skipped for `plain`). */
+export const deployLiveOracleAdapter = async (
+  params: DeployOracleParams
+): Promise<{ address: `0x${string}`; contractName: "BandLiveOracle" | "ChainlinkLiveOracle" | "none" }> => {
+  const adapter = oracleAdapterType(params.oracleConfig);
+  if (adapter === "plain") {
+    return { address: zeroAddress, contractName: "none" };
+  }
+
+  const { viem, publicClient, walletClient, chainId, oracleConfig } = params;
+  const deployer = await resolveDeployerAddress(walletClient);
+  const feeds = chainlinkFeedsForChain(chainId);
+  const maxStaleness = maxStalenessFromConfig(oracleConfig, feeds);
+
+  if (adapter === "band") {
+    const bandRef = bandStdRefForChain(chainId, oracleConfig);
+    const contract = await viem.deployContract(
+      "BandLiveOracle",
+      [deployer, bandRef, maxStaleness],
+      { client: { public: publicClient, wallet: walletClient }, account: deployer }
+    );
+    return { address: contract.address as `0x${string}`, contractName: "BandLiveOracle" };
+  }
+
+  const contract = await viem.deployContract(
+    "ChainlinkLiveOracle",
+    [deployer, maxStaleness],
+    { client: { public: publicClient, wallet: walletClient }, account: deployer }
+  );
+  return { address: contract.address as `0x${string}`, contractName: "ChainlinkLiveOracle" };
+};
+
+/** Deploy {PoDPriceOracle} wired to a live adapter (`zeroAddress` for plain manual oracle). */
+export const deployPodPriceOracle = async (
+  params: DeployOracleParams & { liveAdapter: `0x${string}` }
+): Promise<PodOracleContract> => {
+  const { viem, publicClient, walletClient, chainId, oracleConfig, liveAdapter } = params;
+  const deployer = await resolveDeployerAddress(walletClient);
+  const feeds = chainlinkFeedsForChain(chainId);
+  const fetchInterval = fetchIntervalFromConfig(oracleConfig, feeds);
+
+  return (await viem.deployContract(
+    "PoDPriceOracle",
+    [deployer, liveAdapter, fetchInterval],
+    { client: { public: publicClient, wallet: walletClient }, account: deployer }
+  )) as PodOracleContract;
+};
+
+const setAdapterFeed = async (params: {
+  adapter: LiveAdapterContract;
+  adapterType: OracleAdapterJson;
+  token: `0x${string}`;
+  entry: OracleFeedEntryJson;
+  defaultChainlink: `0x${string}`;
+  writeOpts: { account: `0x${string}`; gas?: bigint };
+  publicClient: unknown;
+}): Promise<void> => {
+  const { adapter, adapterType, token, entry, defaultChainlink, writeOpts, publicClient } = params;
+  if (adapterType === "chainlink") {
+    const aggregator = (entry.chainlink?.trim() || defaultChainlink) as `0x${string}`;
+    if (aggregator === zeroAddress) return;
+    const h = await adapter.write.setFeed([token, aggregator], writeOpts);
+    await waitMined(publicClient, h);
+    return;
+  }
+  if (adapterType === "band") {
+    const base = packBandSymbol(entry.bandBase ?? "");
+    const quote = packBandSymbol(entry.bandQuote ?? "USDC");
+    if (base === packBandSymbol("")) return;
+    const h = await adapter.write.setFeed([token, base, quote], writeOpts);
+    await waitMined(publicClient, h);
+  }
+};
+
+/** Apply `deployConfig.oracle` feeds to adapter + manual pegs on {PoDPriceOracle}. */
+export const seedOracleFromConfig = async (params: {
+  podOracle: PodOracleContract;
+  liveAdapter: LiveAdapterContract;
+  adapterType: OracleAdapterJson;
+  chainId: number;
+  oracleConfig?: OracleConfigJson;
+  publicClient: unknown;
+  writeOpts: { account: `0x${string}`; gas?: bigint };
+}): Promise<void> => {
+  const { podOracle, liveAdapter, adapterType, chainId, oracleConfig, publicClient, writeOpts } = params;
+  if (adapterType === "plain") return;
+
+  const chainFeeds = chainlinkFeedsForChain(chainId);
+  const tokens = oracleTokensForChain(chainId);
+  const resolved = resolveOracleFeeds(chainId, oracleConfig);
+
+  for (const [token, entry, defaultCl] of [
+    [tokens.localToken, resolved.inboxLocal, chainFeeds.localFeed],
+    [tokens.remoteToken, resolved.inboxRemote, chainFeeds.remoteFeed],
+  ] as const) {
+    await setAdapterFeed({
+      adapter: liveAdapter,
+      adapterType,
+      token,
+      entry,
+      defaultChainlink: defaultCl,
+      writeOpts,
+      publicClient,
+    });
+  }
+
+  for (const [symbol, entry] of Object.entries(resolved.collateral)) {
+    const underlying = canonicalUnderlying(chainId, symbol);
+    if (!underlying) continue;
+    if (entry.pegUsd) {
+      const peg = usdPerWholeToken18(entry.pegUsd);
+      const h = await podOracle.write.setTokenPriceUSD([underlying, peg], writeOpts);
+      await waitMined(publicClient, h);
+      continue;
+    }
+    await setAdapterFeed({
+      adapter: liveAdapter,
+      adapterType,
+      token: underlying,
+      entry,
+      defaultChainlink: chainFeeds.localFeed,
+      writeOpts,
+      publicClient,
+    });
+  }
+};
+
+/** Deploy live adapter + {PoDPriceOracle}, seed feeds, manual legs, and initial cache refresh. */
+export const deployPodOracleStack = async (
+  params: DeployOracleParams
+): Promise<{ podOracle: PodOracleContract; liveAdapter: LiveAdapterContract | null; liveAdapterName: string }> => {
+  const { viem, publicClient, walletClient, chainId, oracleConfig } = params;
+  const deployer = await resolveDeployerAddress(walletClient);
+  const writeOpts = { account: deployer, gas: COTI_ADMIN_WRITE_GAS };
+  const feeds = chainlinkFeedsForChain(chainId);
+  const { localUsd18, remoteUsd18 } = manualUsdLegsForChain(chainId, oracleConfig);
+  const adapterType = oracleAdapterType(oracleConfig);
+
+  if (adapterType === "plain") {
+    const plain = await deployTestnetPriceOracle(params);
+    return {
+      podOracle: plain as unknown as PodOracleContract,
+      liveAdapter: null,
+      liveAdapterName: "PriceOracle",
+    };
+  }
+
+  const { address: liveAdapterAddr, contractName } = await deployLiveOracleAdapter(params);
+  const liveAdapter = (await viem.getContractAt(contractName, liveAdapterAddr, {
+    client: { public: publicClient, wallet: walletClient },
+  })) as LiveAdapterContract;
+
+  const podOracle = await deployPodPriceOracle({ ...params, liveAdapter: liveAdapterAddr });
+
+  const tokens = oracleTokensForChain(chainId);
+  let h = await podOracle.write.setInboxTokens([tokens.localToken, tokens.remoteToken], writeOpts);
+  await waitMined(publicClient, h);
+
+  await seedOracleFromConfig({
+    podOracle,
+    liveAdapter,
+    adapterType,
+    chainId,
+    oracleConfig,
+    publicClient,
+    writeOpts,
+  });
+
+  const manualLegs = oracleConfig?.manualLegs;
+  const remoteSpot = manualLegs?.remoteUsdSpot ?? manualLegs?.cotiUsdSpot ?? oracleConfig?.cotiUsdSpot;
+  const localSpot = manualLegs?.localUsdSpot;
+
+  if (feeds.manualLeg === "local" || feeds.manualLeg === "both") {
+    const peg = localSpot ? usdPerWholeToken18(localSpot) : localUsd18;
+    const h = await podOracle.write.setLocalTokenPriceUSD([peg], writeOpts);
+    await waitMined(publicClient, h);
+  }
+  if (feeds.manualLeg === "remote" || feeds.manualLeg === "both") {
+    const peg = remoteSpot ? usdPerWholeToken18(remoteSpot) : remoteUsd18;
+    const h = await podOracle.write.setRemoteTokenPriceUSD([peg], writeOpts);
+    await waitMined(publicClient, h);
+  }
+
+  const usdc = usdcUnderlyingForChain(chainId);
+  const usdcCfg = resolveOracleFeeds(chainId, oracleConfig).collateral.USDC;
+  if (usdc && usdcCfg?.pegUsd) {
+    const peg = usdPerWholeToken18(usdcCfg.pegUsd);
+    const h = await podOracle.write.setTokenPriceUSD([usdc, peg], writeOpts);
+    await waitMined(publicClient, h);
+  } else if (usdc && !resolveOracleFeeds(chainId, oracleConfig).collateral.USDC) {
+    const h = await podOracle.write.setTokenPriceUSD([usdc, MANUAL_USD_PEG_18], writeOpts);
+    await waitMined(publicClient, h);
+  }
+
+  if (feeds.localFeed !== zeroAddress || feeds.remoteFeed !== zeroAddress || adapterType === "band") {
+    const h = await podOracle.write.refreshCache([], writeOpts);
+    await waitMined(publicClient, h);
+  }
+
+  const [localStored, remoteStored] = await podOracle.read.getPricesUSD();
+  if (localStored === 0n || remoteStored === 0n) {
+    throw new Error(
+      `PoDPriceOracle legs not seeded (local=${localStored} remote=${remoteStored} chainId=${chainId})`
+    );
+  }
+
+  return { podOracle, liveAdapter, liveAdapterName: contractName };
+};
+
+/** @deprecated Use {@link deployPodOracleStack}. */
+export const deployChainlinkPriceOracle = async (params: DeployOracleParams): Promise<PodOracleContract> => {
+  const { podOracle } = await deployPodOracleStack(params);
+  return podOracle;
+};
+
+/** Deploy oracle stack or plain {PriceOracle}. Does not wire inbox/factory. */
+export const deployOracleForChain = async (
+  params: DeployOracleParams
+): Promise<{ address: `0x${string}`; contractName: "PoDPriceOracle" | "PriceOracle"; liveAdapter?: `0x${string}` }> => {
+  const { podOracle, liveAdapter, liveAdapterName } = await deployPodOracleStack(params);
+  return {
+    address: podOracle.address,
+    contractName: liveAdapterName === "PriceOracle" ? "PriceOracle" : "PoDPriceOracle",
+    liveAdapter: liveAdapter?.address,
+  };
+};
+
+/** Point an inbox at the configured oracle (`Inbox.setPriceOracle`). */
+export const wireOracleToInbox = async (params: {
+  inbox: {
+    write: {
+      setPriceOracle: (args: [`0x${string}`], options?: { account: `0x${string}` }) => Promise<`0x${string}`>;
+    };
+  };
+  oracleAddress: `0x${string}`;
+  publicClient: unknown;
+  walletClient: WalletClient;
+}): Promise<void> => {
+  const deployer = await resolveDeployerAddress(params.walletClient);
+  const hash = await params.inbox.write.setPriceOracle([params.oracleAddress], { account: deployer });
+  await waitMined(params.publicClient, hash);
+};
+
+/** Point a Privacy Portal factory at the configured oracle (`setPriceOracle`). */
+export const wireOracleToFactory = async (params: {
+  factoryAddress: `0x${string}`;
+  oracleAddress: `0x${string}`;
+  publicClient: unknown;
+  walletClient: WalletClient;
+  viem: { getContractAt: (name: string, address: `0x${string}`, opts: object) => Promise<any> };
+}): Promise<void> => {
+  const deployer = await resolveDeployerAddress(params.walletClient);
+  const factory = await params.viem.getContractAt("PrivacyPortalFactory", params.factoryAddress, {
+    client: { public: params.publicClient, wallet: params.walletClient },
+  });
+  const hash = (await factory.write.setPriceOracle([params.oracleAddress], { account: deployer })) as `0x${string}`;
+  await waitMined(params.publicClient, hash);
 };
 
 /**

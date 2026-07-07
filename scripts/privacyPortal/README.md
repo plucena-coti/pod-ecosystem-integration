@@ -13,6 +13,55 @@ All scripts use the existing Hardhat network config and `deployConfig.json` inbo
 
 Canonical addresses live in `canonical-collateral.ts` (shared with `deploy-cli.ts`).
 
+**Oracle pricing:** `PoDPriceOracle` delegates live reads to a registered adapter (`ChainlinkLiveOracle` or `BandLiveOracle`). **Portal** calls `getLivePrices(nativeToken, underlying)` per tx; **inbox** uses cached legs refreshed by `refreshCache()`. Manual pegs (`setTokenPriceUSD`, inbox legs) are set at deploy — e.g. pUSDC **$1 USD peg**.
+
+### Oracle via `deploy:cli`
+
+Per-chain oracle settings live in `deployConfig.json` under `chains[chainId].oracle`:
+
+```json
+"oracle": {
+  "adapter": "chainlink",
+  "liveAdapter": "",
+  "bandStdRef": "",
+  "maxStaleness": 86400,
+  "fetchInterval": 300,
+  "feeds": {
+    "inboxLocal": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" },
+    "inboxRemote": {},
+    "collateral": {
+      "USDC": { "pegUsd": "1" },
+      "WETH": { "chainlink": "0x694AA1769357215DE4FAC081bf1f309aDC325306" }
+    }
+  },
+  "manualLegs": { "remoteUsdSpot": "0.01272522" },
+  "consumers": {
+    "inbox": "",
+    "privacyPortalFactory": ""
+  }
+}
+```
+
+Set `"adapter": "band"` on a chain to deploy `BandLiveOracle` instead (configure `bandStdRef` and `bandBase`/`bandQuote` in feeds). COTI testnet uses `"adapter": "plain"` (manual legs only).
+
+**Choosing the Privacy Portal oracle:** `consumers.privacyPortalFactory` overrides `priceOracle` for the factory constructor and `WireFactoryOracle`. Leave empty to use the deployed `priceOracle`. Set a different address when inbox and portal should use separate `PoDPriceOracle` instances.
+
+| CLI target | Purpose |
+|------------|---------|
+| **PriceOracle** | Deploy live adapter + `PoDPriceOracle` (or plain `PriceOracle` when `adapter: "plain"`); records `priceOracle`, `oracle.liveAdapter`, `oracle.adapter` |
+| **WireInboxOracle** | `Inbox.setPriceOracle` — uses `consumers.inbox` or `priceOracle` |
+| **WireFactoryOracle** | `PrivacyPortalFactory.setPriceOracle` — uses `consumers.privacyPortalFactory` or `priceOracle` |
+| **PpFactory** | Deploys factory; constructor oracle = `consumers.privacyPortalFactory` or `priceOracle` (zero if unset — wire later) |
+| **FeeConfig** | Applies inbox min-fee templates from `feeConfig` |
+
+**Launch order (source chain, example Sepolia):**
+
+```bash
+DEPLOY_CLI_NETWORK=sepolia DEPLOY_CLI_TARGETS=inbox,priceOracle,feeConfig,wireInboxOracle,ppPortalImpl,ppTokenImpl,ppPortalFactory,wireFactoryOracle npm run deploy:cli
+```
+
+After deploying a new oracle, run **WireInboxOracle** and **WireFactoryOracle** to switch live contracts. Keeper: call `oracle.refreshCache()` periodically for **inbox** fee validation only (portal fees are live per tx).
+
 ### Native ETH / AVAX (wrap / unwrap in-contract)
 
 When the factory creates a portal with `nativeWrappedUnderlying = true` (pWETH / pWAVAX):

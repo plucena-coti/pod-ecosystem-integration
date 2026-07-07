@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import { encodePacked, getAddress, keccak256, zeroAddress, zeroHash, type PublicClient, type WalletClient } from "viem";
-import { deployInboxWithInit } from "../system/mpc-test-utils.js";
+import { oracleTokensForChain } from "../../scripts/oracle-tokens.js";
 
 export const RECIPIENT = "0x00000000000000000000000000000000000000b0" as `0x${string}`;
 
+/** Mock pToken {estimateFee} total leg fee. */
+export const DEFAULT_POD_FEE = 1000n;
+/** Zero portal fee when using {MockPrivacyPortalFactory}. */
+export const DEFAULT_PORTAL_FEE = 0n;
+
 export const DEFAULT_WITHDRAW = {
-  transferFee: 100n,
-  transferCallbackFee: 11n,
-  burnFee: 200n,
-  burnCallbackFee: 22n,
+  portalFee: DEFAULT_PORTAL_FEE,
+  transferFee: DEFAULT_POD_FEE,
+  transferCallbackFee: 100n,
   permitDeadline: 999_999_999n,
   v: 27,
   r: zeroHash,
   s: zeroHash,
 } as const;
+
+export const MAX_PACKED_FEE = (1n << 128n) - 1n;
 
 export type PortalTestContext = {
   viem: any;
@@ -24,9 +30,22 @@ export type PortalTestContext = {
   underlying: any;
   pToken: any;
   portal: any;
+  mockFactory?: any;
 };
 
 const writeOpts = (ctx: PortalTestContext) => ({ account: ctx.owner });
+
+export async function deployMockPortalFactory(params: {
+  viem: any;
+  publicClient: PublicClient;
+  wallet: WalletClient;
+  owner: `0x${string}`;
+}) {
+  const { portalNative } = oracleTokensForChain(31337);
+  return params.viem.deployContract("MockPrivacyPortalFactory", [params.owner, portalNative], {
+    client: { public: params.publicClient, wallet: params.wallet },
+  });
+}
 
 export async function deployDirectPortalContext(params: {
   viem: any;
@@ -34,18 +53,28 @@ export async function deployDirectPortalContext(params: {
   wallet: WalletClient;
   owner: `0x${string}`;
 }): Promise<PortalTestContext> {
-  const underlying = await params.viem.deployContract("MockERC20", ["USD Coin", "USDC"], {
+  const mockFactory = await deployMockPortalFactory(params);
+  const cloneHelper = await params.viem.deployContract("CloneHelper", [], {
+    client: { public: params.publicClient, wallet: params.wallet },
+  });
+  const underlying = await params.viem.deployContract("MockERC20", ["USD Coin", "USDC", 18], {
     client: { public: params.publicClient, wallet: params.wallet },
   });
   const pToken = await params.viem.deployContract("MockPodERC20ForPortal", [], {
     client: { public: params.publicClient, wallet: params.wallet },
   });
-  const portal = await params.viem.deployContract("PrivacyPortal", [], {
+  const portalImpl = await params.viem.deployContract("PrivacyPortal", [], {
+    client: { public: params.publicClient, wallet: params.wallet },
+  });
+  await cloneHelper.write.clone([portalImpl.address], { account: params.owner });
+  const portalAddress = (await cloneHelper.read.lastClone()) as `0x${string}`;
+  const portal = await params.viem.getContractAt("PrivacyPortal", portalAddress, {
     client: { public: params.publicClient, wallet: params.wallet },
   });
   await portal.write.initialize([params.owner, underlying.address, pToken.address, 18, false], {
     account: params.owner,
   });
+  await portal.write.setPauseController([mockFactory.address], { account: params.owner });
 
   return {
     viem: params.viem,
@@ -56,6 +85,7 @@ export async function deployDirectPortalContext(params: {
     underlying,
     pToken,
     portal,
+    mockFactory,
   };
 }
 
@@ -67,12 +97,19 @@ export async function fundUserAndApprovePortal(ctx: PortalTestContext, amount: b
 export async function depositPublicToken(
   ctx: PortalTestContext,
   amount: bigint,
-  params: { recipient?: `0x${string}`; fee?: bigint; callbackFee?: bigint } = {}
+  params: {
+    recipient?: `0x${string}`;
+    portalFee?: bigint;
+    mintFee?: bigint;
+    callbackFee?: bigint;
+  } = {}
 ) {
-  await ctx.portal.write.deposit([params.recipient ?? ctx.recipient, amount, params.callbackFee ?? 77n], {
-    ...writeOpts(ctx),
-    value: params.fee ?? 1_000n,
-  });
+  const portalFee = params.portalFee ?? DEFAULT_PORTAL_FEE;
+  const mintFee = params.mintFee ?? DEFAULT_POD_FEE;
+  await ctx.portal.write.deposit(
+    [params.recipient ?? ctx.recipient, amount, portalFee, params.callbackFee ?? 77n],
+    { ...writeOpts(ctx), value: mintFee + portalFee }
+  );
 }
 
 export async function deployNativePortalContext(params: {
@@ -81,18 +118,28 @@ export async function deployNativePortalContext(params: {
   wallet: WalletClient;
   owner: `0x${string}`;
 }): Promise<PortalTestContext> {
+  const mockFactory = await deployMockPortalFactory(params);
+  const cloneHelper = await params.viem.deployContract("CloneHelper", [], {
+    client: { public: params.publicClient, wallet: params.wallet },
+  });
   const underlying = await params.viem.deployContract("MockWrappedNative", ["Wrapped Ether", "WETH"], {
     client: { public: params.publicClient, wallet: params.wallet },
   });
   const pToken = await params.viem.deployContract("MockPodERC20ForPortal", [], {
     client: { public: params.publicClient, wallet: params.wallet },
   });
-  const portal = await params.viem.deployContract("PrivacyPortal", [], {
+  const portalImpl = await params.viem.deployContract("PrivacyPortal", [], {
+    client: { public: params.publicClient, wallet: params.wallet },
+  });
+  await cloneHelper.write.clone([portalImpl.address], { account: params.owner });
+  const portalAddress = (await cloneHelper.read.lastClone()) as `0x${string}`;
+  const portal = await params.viem.getContractAt("PrivacyPortal", portalAddress, {
     client: { public: params.publicClient, wallet: params.wallet },
   });
   await portal.write.initialize([params.owner, underlying.address, pToken.address, 18, true], {
     account: params.owner,
   });
+  await portal.write.setPauseController([mockFactory.address], { account: params.owner });
 
   return {
     viem: params.viem,
@@ -103,19 +150,21 @@ export async function deployNativePortalContext(params: {
     underlying,
     pToken,
     portal,
+    mockFactory,
   };
 }
 
 export async function depositNativeToken(
   ctx: PortalTestContext,
   amount: bigint,
-  params: { recipient?: `0x${string}`; mintFee?: bigint; callbackFee?: bigint } = {}
+  params: { recipient?: `0x${string}`; portalFee?: bigint; mintFee?: bigint; callbackFee?: bigint } = {}
 ) {
-  const mintFee = params.mintFee ?? 1_000n;
-  await ctx.portal.write.depositNative([params.recipient ?? ctx.recipient, amount, params.callbackFee ?? 77n], {
-    ...writeOpts(ctx),
-    value: amount + mintFee,
-  });
+  const portalFee = params.portalFee ?? DEFAULT_PORTAL_FEE;
+  const mintFee = params.mintFee ?? DEFAULT_POD_FEE;
+  await ctx.portal.write.depositNative(
+    [params.recipient ?? ctx.recipient, amount, portalFee, params.callbackFee ?? 77n],
+    { ...writeOpts(ctx), value: amount + mintFee + portalFee }
+  );
 }
 
 export async function seedPortalVault(ctx: PortalTestContext, amount: bigint) {
@@ -131,10 +180,10 @@ export async function seedNativePortalVault(ctx: PortalTestContext, amount: bigi
 export async function requestWithdraw(
   ctx: PortalTestContext,
   amount: bigint,
-  params: { recipient?: `0x${string}`; transferFee?: bigint; burnFee?: bigint } = {}
+  params: { recipient?: `0x${string}`; portalFee?: bigint; transferFee?: bigint } = {}
 ) {
+  const portalFee = params.portalFee ?? DEFAULT_WITHDRAW.portalFee;
   const transferFee = params.transferFee ?? DEFAULT_WITHDRAW.transferFee;
-  const burnFee = params.burnFee ?? DEFAULT_WITHDRAW.burnFee;
   const recipient = params.recipient ?? ctx.recipient;
   const nonce = await ctx.portal.read.withdrawalNonce();
   const withdrawalId = keccak256(
@@ -147,22 +196,22 @@ export async function requestWithdraw(
     [
       recipient,
       amount,
+      portalFee,
       transferFee,
       DEFAULT_WITHDRAW.transferCallbackFee,
-      burnFee,
-      DEFAULT_WITHDRAW.burnCallbackFee,
       DEFAULT_WITHDRAW.permitDeadline,
       DEFAULT_WITHDRAW.v,
       DEFAULT_WITHDRAW.r,
       DEFAULT_WITHDRAW.s,
     ],
-    { ...writeOpts(ctx), value: transferFee + burnFee }
+    { ...writeOpts(ctx), value: transferFee + portalFee }
   );
   const transferRequestId = await ctx.pToken.read.lastTransferRequestId();
   return { withdrawalId, transferRequestId };
 }
 
 export async function completePTokenTransferCallback(ctx: PortalTestContext) {
+  await ctx.pToken.write.markLastTransferSuccessful([], writeOpts(ctx));
   await ctx.pToken.write.triggerLastTransferCallback([], writeOpts(ctx));
 }
 
@@ -174,35 +223,41 @@ export async function triggerWithdrawalRelease(ctx: PortalTestContext, withdrawa
   await ctx.portal.write.triggerWithdrawalRelease([withdrawalId], writeOpts(ctx));
 }
 
-export async function setBurnSubmissionFailure(ctx: PortalTestContext, shouldFail: boolean) {
-  await ctx.pToken.write.setBurnShouldRevert([shouldFail], writeOpts(ctx));
-}
-
-export async function burnAccumulatedDebt(ctx: PortalTestContext, amount: bigint) {
-  await ctx.portal.write.burnAccumulatedDebt(
-    [amount, DEFAULT_WITHDRAW.burnFee, DEFAULT_WITHDRAW.burnCallbackFee],
-    { ...writeOpts(ctx), value: DEFAULT_WITHDRAW.burnFee }
-  );
+export async function burnAccumulatedPTokens(ctx: PortalTestContext, amount: bigint, burnFee = DEFAULT_POD_FEE) {
+  await ctx.portal.write.burnAccumulatedPTokens([amount, DEFAULT_WITHDRAW.transferCallbackFee], {
+    ...writeOpts(ctx),
+    value: burnFee,
+  });
 }
 
 export async function expectDepositMintSubmitted(
   ctx: PortalTestContext,
-  params: { amount: bigint; recipient?: `0x${string}`; fee?: bigint; callbackFee?: bigint }
+  params: {
+    amount: bigint;
+    recipient?: `0x${string}`;
+    mintFee?: bigint;
+    portalFee?: bigint;
+    callbackFee?: bigint;
+  }
 ) {
+  const portalFee = params.portalFee ?? DEFAULT_PORTAL_FEE;
+  const mintFee = params.mintFee ?? DEFAULT_POD_FEE;
   assert.equal(await ctx.underlying.read.balanceOf([ctx.portal.address]), params.amount);
   assert.equal(await ctx.pToken.read.lastMintRecipient(), getAddress(params.recipient ?? ctx.recipient));
   assert.equal(await ctx.pToken.read.lastMintAmount(), params.amount);
-  assert.equal(await ctx.pToken.read.lastMintValue(), params.fee ?? 1_000n);
+  assert.equal(await ctx.pToken.read.lastMintValue(), mintFee);
   assert.equal(await ctx.pToken.read.lastMintCallbackFee(), params.callbackFee ?? 77n);
+  assert.equal(await ctx.portal.read.accumulatedPortalFees(), portalFee);
 }
 
-export async function expectWithdrawTransferSubmitted(ctx: PortalTestContext, amount: bigint) {
+export async function expectWithdrawTransferSubmitted(ctx: PortalTestContext, amount: bigint, portalFee = DEFAULT_PORTAL_FEE) {
   assert.equal(await ctx.pToken.read.lastTransferFrom(), getAddress(ctx.owner));
   assert.equal(await ctx.pToken.read.lastTransferTo(), getAddress(ctx.portal.address));
   assert.equal(await ctx.pToken.read.lastTransferAmount(), amount);
   assert.equal(await ctx.pToken.read.lastTransferValue(), DEFAULT_WITHDRAW.transferFee);
   assert.equal(await ctx.pToken.read.lastTransferCallbackFee(), DEFAULT_WITHDRAW.transferCallbackFee);
   assert.equal(await ctx.portal.read.withdrawalNonce(), 1n);
+  assert.equal(await ctx.portal.read.accumulatedPortalFees(), portalFee);
 }
 
 export async function deployCotiMother(ctx: PortalTestContext, inboxAddress: `0x${string}`) {
@@ -222,6 +277,8 @@ const CONSTANT_FEE = {
 const deployInboxWithFees = async (viem: any, chainId: bigint, client: { public: PublicClient; wallet: WalletClient }) => {
   const inbox = await deployInboxWithInit(viem, chainId, { client });
   const oracle = await viem.deployContract("PriceOracle", [client.wallet.account.address], { client });
+  const { localToken, remoteToken } = oracleTokensForChain(Number(chainId));
+  await oracle.write.setInboxTokens([localToken, remoteToken], { account: client.wallet.account.address });
   await oracle.write.setLocalTokenPriceUSD([10n ** 18n], { account: client.wallet.account.address });
   await oracle.write.setRemoteTokenPriceUSD([10n ** 18n], { account: client.wallet.account.address });
   await inbox.write.setPriceOracle([oracle.address], { account: client.wallet.account.address });
@@ -231,7 +288,18 @@ const deployInboxWithFees = async (viem: any, chainId: bigint, client: { public:
   return inbox;
 };
 
-export async function deployPortalFactory(ctx: PortalTestContext) {
+export async function deployPortalFactory(
+  ctx: PortalTestContext,
+  params: {
+    priceOracle?: `0x${string}`;
+    depositFixedFee?: bigint;
+    depositPercentageBps?: bigint;
+    depositMaxFee?: bigint;
+    withdrawFixedFee?: bigint;
+    withdrawPercentageBps?: bigint;
+    withdrawMaxFee?: bigint;
+  } = {}
+) {
   const client = { public: ctx.publicClient, wallet: ctx.wallet };
   const inbox = await deployInboxWithFees(ctx.viem, 31337n, client);
   const mother = await deployCotiMother(ctx, inbox.address);
@@ -241,9 +309,26 @@ export async function deployPortalFactory(ctx: PortalTestContext) {
   const tokenImplementation = await ctx.viem.deployContract("PodErc20MintableInitializable", [], {
     client: { public: ctx.publicClient, wallet: ctx.wallet },
   });
+  const { portalNative } = oracleTokensForChain(31337);
   const factory = await ctx.viem.deployContract(
     "PrivacyPortalFactory",
-    [ctx.owner, inbox.address, 7082400n, mother.address, tokenImplementation.address, portalImplementation.address],
+    [
+      ctx.owner,
+      inbox.address,
+      7082400n,
+      mother.address,
+      tokenImplementation.address,
+      portalImplementation.address,
+      ctx.owner,
+      portalNative,
+      params.priceOracle ?? zeroAddress,
+      params.depositFixedFee ?? 0n,
+      params.depositPercentageBps ?? 0n,
+      params.depositMaxFee ?? MAX_PACKED_FEE,
+      params.withdrawFixedFee ?? 0n,
+      params.withdrawPercentageBps ?? 0n,
+      params.withdrawMaxFee ?? MAX_PACKED_FEE,
+    ],
     { client: { public: ctx.publicClient, wallet: ctx.wallet } }
   );
   return { factory, mother, inbox };
@@ -251,7 +336,7 @@ export async function deployPortalFactory(ctx: PortalTestContext) {
 
 export async function deployFactoryPortalPair(ctx: PortalTestContext) {
   const { factory } = await deployPortalFactory(ctx);
-  const underlying = await ctx.viem.deployContract("MockERC20", ["Second", "SEC"], {
+  const underlying = await ctx.viem.deployContract("MockERC20", ["Second", "SEC", 6], {
     client: { public: ctx.publicClient, wallet: ctx.wallet },
   });
 
