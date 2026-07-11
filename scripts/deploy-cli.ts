@@ -16,6 +16,7 @@ import {
   asAddress,
   chainlinkFeedsForChain,
   configureTestnetInboxMinFees,
+  configurePortalFactoryFees,
   createPublicClientForChain,
   deployDeterministicInbox,
   deployOracleForChain,
@@ -31,6 +32,11 @@ import {
   podConfigureKeepInbox,
   patchBuildInfoSolcLongVersion,
   readFeeConfigForChain,
+  readPortalFeeConfigSync,
+  portalFeeConfigTupleFromJson,
+  normalizePortalFeeConfig,
+  portalFeeConfigEq,
+  formatPortalFeeConfig,
   oracleTokensForChain,
   resolveDeployerAddress,
   resolveWalletAccount,
@@ -165,6 +171,39 @@ const recordInboxSalt = async (params: {
 const factoryOwner = (ctx: DeployCtx): Address => {
   const raw = optionalEnv("FACTORY_OWNER");
   return raw ? asAddress(raw, "FACTORY_OWNER") : ctx.deployer;
+};
+
+/** Constructor args for `PrivacyPortalFactory` verification (deploy-time snapshot when recorded). */
+const ppFactoryVerifyArgs = (ctx: DeployCtx): string[] => {
+  const chainCfg = chainCfgSync(ctx.chainId);
+  const owner = factoryOwner(ctx);
+  const stored = chainCfg.privacyPortalFactoryConstructor as
+    | { priceOracle?: string; portalFee?: { deposit: Record<string, string>; withdraw: Record<string, string> } }
+    | undefined;
+  const portalFee = stored?.portalFee
+    ? {
+        deposit: portalFeeConfigTupleFromJson(stored.portalFee.deposit as any),
+        withdraw: portalFeeConfigTupleFromJson(stored.portalFee.withdraw as any),
+      }
+    : readPortalFeeConfigSync(ctx.chainId);
+  const portalOracle = stored?.priceOracle ?? resolvePortalOracle(chainCfg) ?? zeroAddress;
+  return [
+    owner,
+    ctx.inboxAddress,
+    String(pairedCotiChainId(ctx)),
+    readCotiMother(pairedCotiChainId(ctx)) ?? "",
+    chainCfg.podTokenImplementation,
+    chainCfg.portalImplementation,
+    owner,
+    oracleTokensForChain(ctx.chainId).portalNative,
+    portalOracle,
+    portalFee.deposit.fixedFee.toString(),
+    portalFee.deposit.percentageBps.toString(),
+    portalFee.deposit.maxFee.toString(),
+    portalFee.withdraw.fixedFee.toString(),
+    portalFee.withdraw.percentageBps.toString(),
+    portalFee.withdraw.maxFee.toString(),
+  ];
 };
 
 const getInbox = (ctx: DeployCtx) =>
@@ -749,6 +788,53 @@ const TARGETS: Target[] = [
     },
   },
   {
+    id: "ppPortalFee",
+    label: "PpPortalFee",
+    kind: "action",
+    roles: ["source"],
+    dependsOn: ["ppPortalFactory"],
+    status: async (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const factoryAddr = chainCfg.privacyPortalFactory;
+      if (!isAddr(factoryAddr)) return { applied: false, detail: "no privacyPortalFactory in deployConfig" };
+      const desired = readPortalFeeConfigSync(ctx.chainId);
+      const factory = await ctx.viem.getContractAt("PrivacyPortalFactory", factoryAddr as Address, {
+        client: { public: ctx.publicClient, wallet: ctx.walletClient },
+      });
+      const [curDepositRaw, curWithdrawRaw] = await Promise.all([
+        factory.read.getFeeConfig([true]),
+        factory.read.getFeeConfig([false]),
+      ]);
+      const curDeposit = normalizePortalFeeConfig(curDepositRaw);
+      const curWithdraw = normalizePortalFeeConfig(curWithdrawRaw);
+      const depositOk = portalFeeConfigEq(curDeposit, desired.deposit);
+      const withdrawOk = portalFeeConfigEq(curWithdraw, desired.withdraw);
+      if (depositOk && withdrawOk) {
+        return { applied: true, detail: "matches config" };
+      }
+      const parts: string[] = [];
+      if (!depositOk) {
+        parts.push(`deposit on-chain ${formatPortalFeeConfig(curDeposit)} != config ${formatPortalFeeConfig(desired.deposit)}`);
+      }
+      if (!withdrawOk) {
+        parts.push(`withdraw on-chain ${formatPortalFeeConfig(curWithdraw)} != config ${formatPortalFeeConfig(desired.withdraw)}`);
+      }
+      return { applied: false, detail: parts.join("; ") };
+    },
+    run: async (ctx) => {
+      const chainCfg = chainCfgSync(ctx.chainId);
+      const factoryAddr = asAddress(chainCfg.privacyPortalFactory, "privacyPortalFactory");
+      await configurePortalFactoryFees({
+        viem: ctx.viem,
+        factoryAddress: factoryAddr,
+        publicClient: ctx.publicClient,
+        walletClient: ctx.walletClient,
+        chainId: ctx.chainId,
+      });
+      console.log("  portal factory fees match deployConfig");
+    },
+  },
+  {
     id: "mpcExecutor",
     label: "MpcExecutor",
     kind: "contract",
@@ -982,9 +1068,9 @@ const TARGETS: Target[] = [
       } else {
         console.log(`  factory constructor oracle: ${oracleAddr}`);
       }
-      const maxFee = (1n << 128n) - 1n;
       const owner = factoryOwner(ctx);
       const { portalNative } = oracleTokensForChain(ctx.chainId);
+      const portalFee = readPortalFeeConfigSync(ctx.chainId);
       return deploySimple(ctx, "PrivacyPortalFactory", [
         owner,
         ctx.inboxAddress,
@@ -995,37 +1081,15 @@ const TARGETS: Target[] = [
         owner,
         portalNative,
         oracleAddr,
-        0n,
-        0n,
-        maxFee,
-        0n,
-        0n,
-        maxFee,
+        portalFee.deposit.fixedFee,
+        portalFee.deposit.percentageBps,
+        portalFee.deposit.maxFee,
+        portalFee.withdraw.fixedFee,
+        portalFee.withdraw.percentageBps,
+        portalFee.withdraw.maxFee,
       ]);
     },
-    verifyArgs: (ctx) => {
-      const chainCfg = chainCfgSync(ctx.chainId);
-      const owner = factoryOwner(ctx);
-      const maxFee = ((1n << 128n) - 1n).toString();
-      const portalOracle = resolvePortalOracle(chainCfg) ?? zeroAddress;
-      return [
-        owner,
-        ctx.inboxAddress,
-        String(pairedCotiChainId(ctx)),
-        readCotiMother(pairedCotiChainId(ctx)) ?? "",
-        chainCfg.podTokenImplementation,
-        chainCfg.portalImplementation,
-        owner,
-        oracleTokensForChain(ctx.chainId).portalNative,
-        portalOracle,
-        "0",
-        "0",
-        maxFee,
-        "0",
-        "0",
-        maxFee,
-      ];
-    },
+    verifyArgs: (ctx) => ppFactoryVerifyArgs(ctx),
   },
 
   // --- PrivacyPortal test-token wiring (per token, per source chain; clones via the factories) ---

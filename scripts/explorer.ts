@@ -25,8 +25,9 @@ export const explorerApiForChain = (chainId: number): ExplorerApi | undefined =>
     case 43113:
       return {
         kind: "etherscan",
-        apiUrl: "https://api.routescan.io/v2/network/testnet/evm/43113/etherscan/api",
-        siteUrl: "https://testnet.snowtrace.io",
+        apiUrl: "https://api.etherscan.io/v2/api?chainid=43113",
+        siteUrl: "https://testnet.snowscan.xyz",
+        apiKey: process.env.ETHERSCAN_API_KEY,
       };
     case 7082400:
       return {

@@ -1,5 +1,7 @@
 # Privacy Portal Deployment Scripts
 
+For a contract-level comparison of PoD PrivacyPortal vs COTI PrivacyBridge (flows, fees, configuration drift), see [`docs/PRIVACY-PORTAL-VS-PRIVACY-BRIDGE-COMPARISON.md`](../../docs/PRIVACY-PORTAL-VS-PRIVACY-BRIDGE-COMPARISON.md).
+
 All scripts use the existing Hardhat network config and `deployConfig.json` inbox addresses unless an env override is supplied.
 
 ## Supported collateral (Sepolia + Fuji)
@@ -53,12 +55,15 @@ Set `"adapter": "band"` on a chain to deploy `BandLiveOracle` instead (configure
 | **WireFactoryOracle** | `PrivacyPortalFactory.setPriceOracle` — uses `consumers.privacyPortalFactory` or `priceOracle` |
 | **PpFactory** | Deploys factory; constructor oracle = `consumers.privacyPortalFactory` or `priceOracle` (zero if unset — wire later) |
 | **FeeConfig** | Applies inbox min-fee templates from `feeConfig` |
+| **PpPortalFee** | Applies factory default portal protocol fees from `portalFee` |
 
 **Launch order (source chain, example Sepolia):**
 
 ```bash
-DEPLOY_CLI_NETWORK=sepolia DEPLOY_CLI_TARGETS=inbox,priceOracle,feeConfig,wireInboxOracle,ppPortalImpl,ppTokenImpl,ppPortalFactory,wireFactoryOracle npm run deploy:cli
+DEPLOY_CLI_NETWORK=sepolia DEPLOY_CLI_TARGETS=inbox,priceOracle,feeConfig,wireInboxOracle,ppPortalImpl,ppTokenImpl,ppPortalFactory,wireFactoryOracle,ppPortalFee npm run deploy:cli
 ```
+
+`portalFee` lives under `chains[chainId].portalFee` with `deposit` and `withdraw` legs, each `{ fixedFee, percentageBps, maxFee }` (native wei; `percentageBps` / 1_000_000). **PpPortalFee** compares on-chain factory defaults via `getFeeConfig` and calls `setDefaultDepositFee` / `setDefaultWithdrawFee` when they differ. Sign with the factory owner (`PRIVATE_KEY` / `FACTORY_OWNER`).
 
 After deploying a new oracle, run **WireInboxOracle** and **WireFactoryOracle** to switch live contracts. Keeper: call `oracle.refreshCache()` periodically for **inbox** fee validation only (portal fees are live per tx).
 

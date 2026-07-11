@@ -110,6 +110,13 @@ export type FeeConfigJson = {
   bufferRatioX10000: string | number;
 };
 
+/** Portal protocol fee template (`fixedFee` / `maxFee` in native wei; `percentageBps` / 1_000_000). */
+export type PortalFeeConfigJson = {
+  fixedFee: string | number;
+  percentageBps: string | number;
+  maxFee: string | number;
+};
+
 /** Oracle adapter selector in `deployConfig.chains[chainId].oracle`. */
 export type OracleAdapterJson = "band" | "chainlink" | "plain";
 
@@ -176,6 +183,8 @@ type DeployConfig = {
       oracle?: OracleConfigJson;
       /** Min-fee templates for this chain's inbox (local = this chain, remote = paired chain). */
       feeConfig?: { local: FeeConfigJson; remote: FeeConfigJson };
+      /** Factory default portal protocol fees (deposit + withdraw). */
+      portalFee?: { deposit: PortalFeeConfigJson; withdraw: PortalFeeConfigJson };
       [key: string]: unknown;
     }
   >;
@@ -407,6 +416,90 @@ export type FeeConfigTuple = {
   errorLength: bigint;
   bufferRatioX10000: bigint;
 };
+
+export type PortalFeeConfigTuple = {
+  fixedFee: bigint;
+  percentageBps: bigint;
+  maxFee: bigint;
+};
+
+/** Default `maxFee` cap used when deploying or when `portalFee` is omitted from deployConfig. */
+export const PORTAL_FEE_MAX_DEFAULT = (1n << 128n) - 1n;
+
+const PORTAL_FEE_FIELDS = ["fixedFee", "percentageBps", "maxFee"] as const;
+
+/** Normalize factory `getFeeConfig` result (viem may return an array for struct getters). */
+export const normalizePortalFeeConfig = (raw: unknown): PortalFeeConfigTuple => {
+  if (Array.isArray(raw)) {
+    return {
+      fixedFee: BigInt(raw[0]),
+      percentageBps: BigInt(raw[1]),
+      maxFee: BigInt(raw[2]),
+    };
+  }
+  const obj = raw as Record<string, bigint | number | string>;
+  return {
+    fixedFee: BigInt(obj.fixedFee),
+    percentageBps: BigInt(obj.percentageBps),
+    maxFee: BigInt(obj.maxFee),
+  };
+};
+
+export const portalFeeConfigEq = (a: PortalFeeConfigTuple, b: PortalFeeConfigTuple): boolean =>
+  PORTAL_FEE_FIELDS.every((f) => a[f] === b[f]);
+
+export const formatPortalFeeConfig = (c: PortalFeeConfigTuple): string =>
+  `(fixed=${c.fixedFee}, bps=${c.percentageBps}, max=${c.maxFee})`;
+
+/** Convert deployConfig portal fee JSON into on-chain tuple fields. */
+export const portalFeeConfigTupleFromJson = (j: PortalFeeConfigJson): PortalFeeConfigTuple => ({
+  fixedFee: BigInt(j.fixedFee),
+  percentageBps: BigInt(j.percentageBps),
+  maxFee: BigInt(j.maxFee),
+});
+
+/** Convert on-chain portal fee tuple into deployConfig-safe JSON. */
+export const portalFeeConfigTupleToJson = (t: PortalFeeConfigTuple): PortalFeeConfigJson => ({
+  fixedFee: t.fixedFee.toString(),
+  percentageBps: t.percentageBps.toString(),
+  maxFee: t.maxFee.toString(),
+});
+
+/** Built-in portal fee defaults (zero fee until `percentageBps` / `fixedFee` are set in config). */
+export const defaultPortalFeeConfigs = (): {
+  deposit: PortalFeeConfigTuple;
+  withdraw: PortalFeeConfigTuple;
+} => {
+  const zero = {
+    fixedFee: 0n,
+    percentageBps: 0n,
+    maxFee: PORTAL_FEE_MAX_DEFAULT,
+  };
+  return { deposit: { ...zero }, withdraw: { ...zero } };
+};
+
+/** Portal fee templates for `chainId` from deployConfig, else {@link defaultPortalFeeConfigs}. */
+export const readPortalFeeConfigSync = (
+  chainId: number
+): { deposit: PortalFeeConfigTuple; withdraw: PortalFeeConfigTuple } => {
+  try {
+    const cfg = JSON.parse(fsSync.readFileSync(deployConfigPath, "utf8")) as DeployConfig;
+    const pf = cfg.chains?.[String(chainId)]?.portalFee;
+    if (pf?.deposit && pf?.withdraw) {
+      return {
+        deposit: portalFeeConfigTupleFromJson(pf.deposit),
+        withdraw: portalFeeConfigTupleFromJson(pf.withdraw),
+      };
+    }
+  } catch {
+    // Missing/unreadable config — fall back to built-in defaults below.
+  }
+  return defaultPortalFeeConfigs();
+};
+
+export const readPortalFeeConfigForChain = async (
+  chainId: number
+): Promise<{ deposit: PortalFeeConfigTuple; withdraw: PortalFeeConfigTuple }> => readPortalFeeConfigSync(chainId);
 
 /** Convert a deployConfig.json fee template into an on-chain `FeeConfig` tuple. */
 export const feeConfigTupleFromJson = (j: FeeConfigJson): FeeConfigTuple => ({
@@ -976,6 +1069,51 @@ export const configureTestnetInboxMinFees = async (params: {
   const writeOpts = { account: deployer } as const;
   const hash = await params.inbox.write.updateMinFeeConfigs([local, remote], writeOpts);
   await waitMined(params.publicClient, hash);
+};
+
+/**
+ * Applies factory default portal fees from `deployConfig.json` (`chains[id].portalFee`).
+ * Idempotent: only sends txs when on-chain config differs.
+ */
+export const configurePortalFactoryFees = async (params: {
+  factoryAddress: `0x${string}`;
+  publicClient: unknown;
+  walletClient: WalletClient;
+  chainId: number;
+  viem: { getContractAt: (name: string, address: `0x${string}`, opts: object) => Promise<any> };
+}): Promise<void> => {
+  const desired = await readPortalFeeConfigForChain(params.chainId);
+  const owner = await resolveDeployerAddress(params.walletClient);
+  const factory = await params.viem.getContractAt("PrivacyPortalFactory", params.factoryAddress, {
+    client: { public: params.publicClient, wallet: params.walletClient },
+  });
+  const [curDepositRaw, curWithdrawRaw] = await Promise.all([
+    factory.read.getFeeConfig([true]),
+    factory.read.getFeeConfig([false]),
+  ]);
+  const curDeposit = normalizePortalFeeConfig(curDepositRaw);
+  const curWithdraw = normalizePortalFeeConfig(curWithdrawRaw);
+
+  if (!portalFeeConfigEq(curDeposit, desired.deposit)) {
+    const hash = (await factory.write.setDefaultDepositFee(
+      [desired.deposit.fixedFee, desired.deposit.percentageBps, desired.deposit.maxFee],
+      { account: owner }
+    )) as `0x${string}`;
+    await waitMined(params.publicClient, hash);
+    console.log(
+      `  deposit portal fee: ${formatPortalFeeConfig(curDeposit)} -> ${formatPortalFeeConfig(desired.deposit)}`
+    );
+  }
+  if (!portalFeeConfigEq(curWithdraw, desired.withdraw)) {
+    const hash = (await factory.write.setDefaultWithdrawFee(
+      [desired.withdraw.fixedFee, desired.withdraw.percentageBps, desired.withdraw.maxFee],
+      { account: owner }
+    )) as `0x${string}`;
+    await waitMined(params.publicClient, hash);
+    console.log(
+      `  withdraw portal fee: ${formatPortalFeeConfig(curWithdraw)} -> ${formatPortalFeeConfig(desired.withdraw)}`
+    );
+  }
 };
 
 /**

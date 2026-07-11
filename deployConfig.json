@@ -81,6 +81,18 @@
           "errorLength": "0",
           "bufferRatioX10000": "0"
         }
+      },
+      "portalFee": {
+        "deposit": {
+          "fixedFee": "0",
+          "percentageBps": "0",
+          "maxFee": "340282366920938463463374607431768211455"
+        },
+        "withdraw": {
+          "fixedFee": "0",
+          "percentageBps": "0",
+          "maxFee": "340282366920938463463374607431768211455"
+        }
       }
     },
     "43113": {
@@ -130,10 +142,37 @@
           "bufferRatioX10000": "0"
         }
       },
+      "portalFee": {
+        "deposit": {
+          "fixedFee": "10000000000000",
+          "percentageBps": "500",
+          "maxFee": "100000000000000000"
+        },
+        "withdraw": {
+          "fixedFee": "10000000000000",
+          "percentageBps": "500",
+          "maxFee": "100000000000000000"
+        }
+      },
       "mpcAdder": "0xf51c789e4c60d33a2abcfd656e607724f56aaf0d",
       "portalImplementation": "0x041ce0750c07638267bea9902c59554d3f4c9d4f",
       "podTokenImplementation": "0xcee95959573618ee8464526c591fe70ae56ab293",
       "privacyPortalFactory": "0xcf06fbf94af5e9eceb15aa1ba6458b72521424fd",
+      "privacyPortalFactoryConstructor": {
+        "priceOracle": "0x0000000000000000000000000000000000000000",
+        "portalFee": {
+          "deposit": {
+            "fixedFee": "0",
+            "percentageBps": "0",
+            "maxFee": "340282366920938463463374607431768211455"
+          },
+          "withdraw": {
+            "fixedFee": "0",
+            "percentageBps": "0",
+            "maxFee": "340282366920938463463374607431768211455"
+          }
+        }
+      },
       "privacyPortalTokens": {
         "pMTT": {
           "underlying": "0x328e70e1c52662cd5f19f824fcb8b463d77a6686",
@@ -270,6 +309,18 @@
           "callbackExecutionGas": "0",
           "errorLength": "0",
           "bufferRatioX10000": "0"
+        }
+      },
+      "portalFee": {
+        "deposit": {
+          "fixedFee": "10000000000000",
+          "percentageBps": "500",
+          "maxFee": "100000000000000000"
+        },
+        "withdraw": {
+          "fixedFee": "10000000000000",
+          "percentageBps": "500",
+          "maxFee": "100000000000000000"
         }
       }
     }
