@@ -271,8 +271,6 @@ export async function createSablierPayrollScenario(): Promise<SablierPayrollScen
     );
     await publicClient.waitForTransactionReceipt({ hash, ...receiptWaitOptions });
     await completePodOpRoundTrip(portalCtx, `fund-${facade.slice(0, 10)}`, async () => hash);
-    const facadeContract = await sepoliaViem.getContractAt(FACADE_PATH, facade);
-    await facadeContract.write.ackPoolCredit([amount], { account });
     await syncPodBalancesRoundTrip(portalCtx, [facade, account], `fund-sync-${facade.slice(0, 10)}`);
     await employerWallet.sendTransaction({
       to: facade,
@@ -332,7 +330,7 @@ export async function createSablierPayrollScenario(): Promise<SablierPayrollScen
         } as never
       );
       await facade.write.registerLeaf(
-        [BigInt(pkg.index), pkg.recipient, pkg.amount, pkg.amountCommitment!],
+        [BigInt(pkg.index), pkg.recipient, pkg.amountCommitment!],
         { account: admin.address }
       );
     }

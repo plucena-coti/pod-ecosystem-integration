@@ -1,4 +1,4 @@
-import { encodeAbiParameters, type Address, type Hex } from "viem";
+import { encodeAbiParameters, toFunctionSelector, type Address, type Hex } from "viem";
 import type { ClaimPackage } from "./merkle.js";
 import { encodeLeaf } from "./merkle.js";
 import { logStep, podTwoWayWriteOptions } from "../../../test/system/mpc-test-utils.js";
@@ -11,17 +11,41 @@ export type CampaignContract = {
   write: Record<string, (...args: unknown[]) => Promise<Hex>>;
 };
 
+const CLAIM_SELECTOR = toFunctionSelector(
+  "claim(uint256,address,((uint256,uint256),bytes),bytes32[])"
+) as Hex;
+
+const CLAIM_TO_SELECTOR = toFunctionSelector(
+  "claimTo(uint256,address,((uint256,uint256),bytes),bytes32[])"
+) as Hex;
+
+function formatItForAbi(it: {
+  ciphertext: { ciphertextHigh: bigint; ciphertextLow: bigint };
+  signature: Hex;
+}) {
+  return [it.ciphertext, it.signature] as const;
+}
+
 export function wrapCampaignFacade(
   raw: CampaignContract,
   backend: PodPayrollBackend
 ): CampaignContract {
   const { podCtx, claimStore } = backend;
 
+  async function buildClaimIt(claimant: Address, amount: bigint, selector: Hex) {
+    return backend.buildClaimItAmount(claimant, raw.address, amount, selector);
+  }
+
   async function preparePayload(pkg: ClaimPackage, claimant: Address): Promise<void> {
     await backend.ensureFacadeTokenIdle?.(raw.address, `preclaim-${pkg.index}`);
     await backend.tokenAdapter.syncAccount(raw.address, `preclaim-facade-${pkg.index}`);
     await backend.tokenAdapter.syncAccount(claimant, `preclaim-claimant-${pkg.index}`);
-    const itAmount = await backend.buildItAmount(pkg.amount, "claim");
+    const facadeBalance = await backend.tokenAdapter.token.read.balanceOf([raw.address]);
+    if (facadeBalance < pkg.amount) {
+      throw new Error("InsufficientPoolBalance");
+    }
+    const verifyIt = await backend.buildVerifyItAmount(claimant, pkg.amount);
+    const itAmount = await buildClaimIt(claimant, pkg.amount, CLAIM_SELECTOR);
     const payoutItAmount = await backend.buildPayoutItAmount(raw.address, pkg.amount);
     const proofHandle = encodeAbiParameters(
       [
@@ -31,7 +55,7 @@ export function wrapCampaignFacade(
       [pkg.proof, BigInt(pkg.index)]
     );
     await claimStore.write.submitPayload(
-      [raw.address, BigInt(pkg.index), itAmount, proofHandle, payoutItAmount],
+      [raw.address, BigInt(pkg.index), verifyIt, proofHandle, payoutItAmount],
       { account: claimant }
     );
   }
@@ -75,6 +99,17 @@ export function wrapCampaignFacade(
     return hash;
   }
 
+  async function encryptedClaimArgs(
+    index: bigint,
+    recipient: Address,
+    amount: bigint,
+    proof: Hex[],
+    claimant: Address
+  ) {
+    const itAmount = await buildClaimIt(claimant, amount, CLAIM_SELECTOR);
+    return [index, recipient, formatItForAbi(itAmount), proof] as const;
+  }
+
   return {
     address: raw.address,
     read: raw.read,
@@ -90,8 +125,9 @@ export function wrapCampaignFacade(
           leaf: encodeLeaf(Number(index), recipient, amount),
         };
         const claimant = (opts?.account ?? recipient) as Address;
+        const encArgs = await encryptedClaimArgs(index, recipient, amount, proof, claimant);
         return claimWithMining(
-          () => raw.write.claim(args, opts),
+          () => raw.write.claim(encArgs, opts),
           pkg,
           claimant,
           claimant,
@@ -101,12 +137,15 @@ export function wrapCampaignFacade(
       async claimPackage(args: unknown[], opts?: { account?: Address; value?: bigint }) {
         const [pkg] = args as [ClaimPackage];
         const claimant = (opts?.account ?? pkg.recipient) as Address;
+        const encArgs = await encryptedClaimArgs(
+          BigInt(pkg.index),
+          pkg.recipient,
+          pkg.amount,
+          pkg.proof,
+          claimant
+        );
         return claimWithMining(
-          () =>
-            raw.write.claim(
-              [BigInt(pkg.index), pkg.recipient, pkg.amount, pkg.proof],
-              opts
-            ),
+          () => raw.write.claim(encArgs, opts),
           pkg,
           claimant,
           claimant,
@@ -123,8 +162,10 @@ export function wrapCampaignFacade(
           proof,
           leaf: encodeLeaf(Number(index), claimant, amount),
         };
+        const itAmount = await buildClaimIt(claimant, amount, CLAIM_TO_SELECTOR);
+        const encArgs = [index, to, formatItForAbi(itAmount), proof] as const;
         return claimWithMining(
-          () => raw.write.claimTo(args, opts),
+          () => raw.write.claimTo(encArgs, opts),
           pkg,
           claimant,
           to,
@@ -134,12 +175,10 @@ export function wrapCampaignFacade(
       async claimToPackage(args: unknown[], opts?: { account?: Address; value?: bigint }) {
         const [pkg, to] = args as [ClaimPackage, Address];
         const claimant = opts?.account ?? pkg.recipient;
+        const itAmount = await buildClaimIt(claimant as Address, pkg.amount, CLAIM_TO_SELECTOR);
+        const encArgs = [BigInt(pkg.index), to, formatItForAbi(itAmount), pkg.proof] as const;
         return claimWithMining(
-          () =>
-            raw.write.claimTo(
-              [BigInt(pkg.index), to, pkg.amount, pkg.proof],
-              { ...opts, account: claimant as Address }
-            ),
+          () => raw.write.claimTo(encArgs, { ...opts, account: claimant as Address }),
           pkg,
           claimant as Address,
           to,
@@ -150,7 +189,7 @@ export function wrapCampaignFacade(
         const [to, amount] = args as [Address, bigint];
         const itAmount = await backend.buildPayoutItAmount(raw.address, amount);
         const fees = backend.portalCtx.base.podTwoWayFees;
-        const hash = await raw.write.clawback([to, amount, itAmount], {
+        const hash = await raw.write.clawback([to, formatItForAbi(itAmount)], {
           ...opts,
           ...podTwoWayWriteOptions(fees),
         });

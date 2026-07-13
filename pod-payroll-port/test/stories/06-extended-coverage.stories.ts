@@ -13,7 +13,7 @@ const run = process.env.SABLIER_PAYROLL_TESTS === "1";
 const d = run ? describe : describe.skip;
 
 const claimInstantAbi = parseAbi([
-  "event ClaimInstant(uint256 indexed index, address indexed recipient, uint128 amount, address indexed to, bool viaSig)",
+  "event ClaimInstant(uint256 indexed index, address indexed recipient, bytes32 amountCommitment, address indexed to, bool viaSig)",
 ]);
 
 d("S16–S21 extended coverage", { concurrency: 1 }, () => {
@@ -34,7 +34,7 @@ d("S16–S21 extended coverage", { concurrency: 1 }, () => {
     });
     assert.equal(logs.length, 1);
     assert.equal(logs[0].args.index, 0n);
-    assert.equal(logs[0].args.amount, 1_500n);
+    assert.equal(logs[0].args.amountCommitment, pkg.amountCommitment);
     assert.equal(logs[0].args.recipient?.toLowerCase(), s.alice.address.toLowerCase());
     spLog("S16 — UI: Show ClaimInstant in activity feed");
   });
