@@ -1,7 +1,7 @@
 import { encodeAbiParameters, type Address, type Hex } from "viem";
 import type { ClaimPackage } from "./merkle.js";
 import { encodeLeaf } from "./merkle.js";
-import { logStep } from "../../../test/system/mpc-test-utils.js";
+import { logStep, podTwoWayWriteOptions } from "../../../test/system/mpc-test-utils.js";
 import type { PodPayrollBackend } from "./pod-backend.js";
 import { mineAfterPayoutClaim, mineAfterPayoutTransfer } from "./async.js";
 
@@ -15,10 +15,11 @@ export function wrapCampaignFacade(
   raw: CampaignContract,
   backend: PodPayrollBackend
 ): CampaignContract {
-  const { podCtx, claimStore, adminWallet } = backend;
+  const { podCtx, claimStore } = backend;
 
   async function preparePayload(pkg: ClaimPackage, claimant: Address): Promise<void> {
     const itAmount = await backend.buildItAmount(pkg.amount, "claim");
+    const payoutItAmount = await backend.buildPayoutItAmount(raw.address, pkg.amount);
     const proofHandle = encodeAbiParameters(
       [
         { type: "bytes32[]" },
@@ -26,9 +27,9 @@ export function wrapCampaignFacade(
       ],
       [pkg.proof, BigInt(pkg.index)]
     );
-    await claimStore.write.setPayload(
-      [raw.address, BigInt(pkg.index), claimant, itAmount, proofHandle],
-      { account: adminWallet.account.address }
+    await claimStore.write.submitPayload(
+      [raw.address, BigInt(pkg.index), itAmount, proofHandle, payoutItAmount],
+      { account: claimant }
     );
   }
 
@@ -70,8 +71,6 @@ export function wrapCampaignFacade(
     }
     return hash;
   }
-
-  const pendingPkg = new WeakMap<object, ClaimPackage>();
 
   return {
     address: raw.address,
@@ -145,7 +144,13 @@ export function wrapCampaignFacade(
         );
       },
       async clawback(args: unknown[], opts?: { account?: Address }) {
-        const hash = await raw.write.clawback(args, opts);
+        const [to, amount] = args as [Address, bigint];
+        const itAmount = await backend.buildPayoutItAmount(raw.address, amount);
+        const fees = backend.portalCtx.base.podTwoWayFees;
+        const hash = await raw.write.clawback([to, amount, itAmount], {
+          ...opts,
+          ...podTwoWayWriteOptions(fees),
+        });
         const receipt = await backend.publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status === "success") {
           await mineAfterPayoutTransfer(podCtx, "clawback");

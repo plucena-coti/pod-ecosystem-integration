@@ -38,6 +38,10 @@ export type PayrollTokenAdapter = {
   token: StoryToken;
   syncAccount: (account: Address, label: string) => Promise<void>;
   userKeyFor: (account: Address) => string;
+  buildTransferIt: (account: Address, amount: bigint) => Promise<{
+    ciphertext: { ciphertextHigh: bigint; ciphertextLow: bigint };
+    signature: Hex;
+  }>;
 };
 
 const BATCH_PROCESS_SELECTOR = toFunctionSelector(
@@ -86,10 +90,12 @@ export function createPayrollTokenAdapter(params: {
   userKeys: Map<string, string>;
   defaultUserKey: string;
   topUpTreasury: (treasury: Address, amount: bigint, label: string) => Promise<void>;
-  /** After treasury pToken transfer to a campaign facade, record pool credits (pToken-only payroll path). */
-  onCampaignFunded?: (facade: Address, amount: bigint) => Promise<void>;
+  /** Route treasury transfers to payroll facades through fundCampaign (encrypted + pool credit). */
+  isPayrollFacade?: (facade: Address) => boolean;
+  fundCampaign?: (facade: Address, amount: bigint, account: Address) => Promise<Hex>;
 }): PayrollTokenAdapter {
-  const { portalCtx, publicClient, userKeys, defaultUserKey, topUpTreasury, onCampaignFunded } = params;
+  const { portalCtx, publicClient, userKeys, defaultUserKey, topUpTreasury, isPayrollFacade, fundCampaign } =
+    params;
   const { pod, base } = portalCtx;
   const fees = base.podTwoWayFees;
 
@@ -127,6 +133,17 @@ export function createPayrollTokenAdapter(params: {
     return { ciphertext: it.ciphertext, signature };
   }
 
+  async function transferToFacade(
+    facade: Address,
+    amount: bigint,
+    account: Address
+  ): Promise<Hex> {
+    if (!fundCampaign) {
+      throw new Error("fundCampaign hook required for payroll facade funding");
+    }
+    return fundCampaign(facade, amount, account);
+  }
+
   function accountForWrite(address: Address): Address {
     return address;
   }
@@ -145,6 +162,9 @@ export function createPayrollTokenAdapter(params: {
     },
     write: {
       async transfer([to, amount], { account }) {
+        if (isPayrollFacade?.(to)) {
+          return transferToFacade(to, amount, account);
+        }
         const itAmount = await buildItAmount(account, amount);
         const hash = await pod.write.transfer(
           [to, itAmount, fees.callbackFeeWei],
@@ -152,13 +172,6 @@ export function createPayrollTokenAdapter(params: {
         );
         await publicClient.waitForTransactionReceipt({ hash, ...receiptWaitOptions });
         await completePodOpRoundTrip(portalCtx, `transfer-${account.slice(0, 8)}`, async () => hash);
-        if (onCampaignFunded) {
-          try {
-            await onCampaignFunded(to, amount);
-          } catch {
-            // not a payroll facade
-          }
-        }
         return hash;
       },
       async approve([spender, amount], { account }) {
@@ -188,5 +201,5 @@ export function createPayrollTokenAdapter(params: {
     },
   };
 
-  return { token, syncAccount, userKeyFor: keyFor };
+  return { token, syncAccount, userKeyFor: keyFor, buildTransferIt: buildItAmount };
 }

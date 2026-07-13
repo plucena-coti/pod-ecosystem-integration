@@ -7,7 +7,10 @@ import {
   setupContext,
   normalizePrivateKey,
   isSimCotiBackend,
+  podTwoWayWriteOptions,
+  receiptWaitOptions,
 } from "../../../test/system/mpc-test-utils.js";
+import { completePodOpRoundTrip } from "../../../test/tokens/test-token-utils.js";
 import { buildSablierTree, setPodMerkleContext, takeTreeByRoot, type ClaimPackage, type SablierMerkleTree } from "./merkle.js";
 import { spLog } from "./utils.js";
 import { PodPayrollBackendImpl } from "./pod-backend.js";
@@ -236,15 +239,30 @@ export async function createSablierPayrollScenario(): Promise<SablierPayrollScen
 
   const payrollFacades = new Set<string>();
 
-  async function onCampaignFunded(facade: Address, amount: bigint): Promise<void> {
-    if (!payrollFacades.has(facade.toLowerCase())) return;
+  async function fundCampaignOnFacade(
+    facade: Address,
+    amount: bigint,
+    account: Address
+  ): Promise<Hex> {
     const facadeContract = await sepoliaViem.getContractAt(FACADE_PATH, facade);
-    await facadeContract.write.creditPool([amount], { account: admin.address });
+    const itAmount = await tokenAdapterRef.buildTransferIt(account, amount);
+    const fees = portalCtx.base.podTwoWayFees;
+    const hash = await (
+      facadeContract as { write: { fundCampaign: (...args: unknown[]) => Promise<Hex> } }
+    ).write.fundCampaign([itAmount, amount], {
+      account,
+      ...podTwoWayWriteOptions(fees),
+    });
+    await publicClient.waitForTransactionReceipt({ hash, ...receiptWaitOptions });
+    await completePodOpRoundTrip(portalCtx, `fund-${facade.slice(0, 10)}`, async () => hash);
     await employerWallet.sendTransaction({
       to: facade,
       value: 5n * 10n ** 18n,
     });
+    return hash;
   }
+
+  let tokenAdapterRef!: ReturnType<typeof createPayrollTokenAdapter>;
 
   const tokenAdapter = createPayrollTokenAdapter({
     portalCtx,
@@ -252,8 +270,10 @@ export async function createSablierPayrollScenario(): Promise<SablierPayrollScen
     userKeys,
     defaultUserKey: podCtx.crypto.userKey,
     topUpTreasury: (treasury, amount, label) => portalDepositTo(portalCtx, treasury, amount, label),
-    onCampaignFunded,
+    isPayrollFacade: (facade) => payrollFacades.has(facade.toLowerCase()),
+    fundCampaign: (facade, amount, account) => fundCampaignOnFacade(facade, amount, account),
   });
+  tokenAdapterRef = tokenAdapter;
 
   const podBackend = new PodPayrollBackendImpl(
     podCtx,
