@@ -10,6 +10,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { network } from "hardhat";
@@ -87,19 +88,26 @@ export function forceSimCotiBackend(): void {
   process.env.COTI_BACKEND = "sim";
 }
 
-async function isRpcUp(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
-    });
-    if (!res.ok) return false;
-    const json = (await res.json()) as { result?: string };
-    return !!json.result;
-  } catch {
-    return false;
-  }
+// TCP-level probe, not an RPC-level one: a slow-starting `hardhat node` accepts the
+// connection as soon as it calls listen(), well before its HTTP/JSON-RPC handler is
+// ready to respond. Checking for an actual RPC response here (as an earlier version
+// of this function did) leaves a race window where a starting-but-not-yet-answering
+// node reads as "not up", so a second `hardhat node` gets spawned onto the same port
+// anyway. A raw connect also correctly treats *any* listener on the port (RPC or not)
+// as "occupied" rather than assuming it's safe to bind. Actual RPC readiness is still
+// confirmed afterward by waitForRpc.
+async function isPortBound(port: number, host = "127.0.0.1"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    const finish = (result: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(result);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(1000, () => finish(false));
+  });
 }
 
 async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
@@ -166,8 +174,8 @@ export async function startSimCotiNetworks(opts?: {
   // Spawning a second, immediately-port-conflicting `hardhat node` and then reaping its
   // exit has been observed to crash Node's child-process handling on some platforms.
   const [sepoliaAlreadyUp, cotiAlreadyUp] = await Promise.all([
-    isRpcUp(`http://127.0.0.1:${sepoliaPort}`),
-    isRpcUp(`http://127.0.0.1:${cotiPort}`),
+    isPortBound(sepoliaPort),
+    isPortBound(cotiPort),
   ]);
 
   const sepoliaProc = sepoliaAlreadyUp ? undefined : spawnHardhatNode(sepoliaPort, SEPOLIA_CHAIN_ID);
