@@ -106,7 +106,12 @@ async function isPortBound(port: number, host = "127.0.0.1"): Promise<boolean> {
     };
     socket.once("connect", () => finish(true));
     socket.once("error", () => finish(false));
-    socket.setTimeout(1000, () => finish(false));
+    // A genuinely free localhost port refuses immediately (ECONNREFUSED) — hitting the
+    // timeout instead means the connect attempt never resolved either way, which is not
+    // evidence the port is free. Treat it as occupied: the failure mode of wrongly skipping
+    // a spawn (waitForRpc below just times out after 30s with a clear error) is far safer
+    // than wrongly spawning into a port that turns out to be bound after all.
+    socket.setTimeout(1000, () => finish(true));
   });
 }
 
