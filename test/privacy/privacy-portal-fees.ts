@@ -45,7 +45,7 @@ describe("PrivacyPortal fees", { concurrency: 1 }, async function () {
       client: { public: ctx.publicClient, wallet: ctx.wallet },
     });
     await factory.write.createPortal(
-      [underlying.address, "Private MIN", "pMIN", 18, false, owner],
+      [underlying.address, "Private MIN", "pMIN", 18, false],
       { account: owner, value: 2_500_000_000_000n }
     );
     const portalAddr = await factory.read.portalForUnderlying([underlying.address]);
@@ -77,7 +77,7 @@ describe("PrivacyPortal fees", { concurrency: 1 }, async function () {
       client: { public: ctx.publicClient, wallet: ctx.wallet },
     });
     await factory.write.createPortal(
-      [underlying.address, "Private FEE", "pFEE", 18, false, owner],
+      [underlying.address, "Private FEE", "pFEE", 18, false],
       { account: owner, value: 2_500_000_000_000n }
     );
     const portalAddr = await factory.read.portalForUnderlying([underlying.address]);
@@ -106,7 +106,7 @@ describe("PrivacyPortal fees", { concurrency: 1 }, async function () {
       client: { public: ctx.publicClient, wallet: ctx.wallet },
     });
     await factory.write.createPortal(
-      [underlying.address, "Private OVR", "pOVR", 18, false, owner],
+      [underlying.address, "Private OVR", "pOVR", 18, false],
       { account: owner, value: 2_500_000_000_000n }
     );
     const portalAddr = await factory.read.portalForUnderlying([underlying.address]);
@@ -194,7 +194,7 @@ describe("PrivacyPortal fees", { concurrency: 1 }, async function () {
       client: { public: ctx.publicClient, wallet: ctx.wallet },
     });
     await factory.write.createPortal(
-      [underlying.address, "Private CFG", "pCFG", 18, false, owner],
+      [underlying.address, "Private CFG", "pCFG", 18, false],
       { account: owner, value: 2_500_000_000_000n }
     );
     const portalAddr = await factory.read.portalForUnderlying([underlying.address]);

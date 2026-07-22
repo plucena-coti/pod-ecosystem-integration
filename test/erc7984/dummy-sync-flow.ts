@@ -50,7 +50,7 @@ describe("DummyTestPERC20 sync ERC-7984 flow", { concurrency: 1 }, async functio
       [portal.address, inbox.address, "Dummy Private USD", "dpUSD", 18],
       { client: { public: publicClient, wallet } }
     );
-    await portal.write.initialize([owner, underlying.address, pToken.address, 18, false], {
+    await portal.write.initialize([underlying.address, pToken.address, 18, false, owner], {
       account: owner,
     });
   });

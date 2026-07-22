@@ -28,7 +28,13 @@ For UI purposes:
 - Request id = handle used to track callback/failure.
 - Callback event = success.
 - `failedRequests(requestId) != "0x"` or failure event = failure.
+- If `failedRequests` ABI-decodes to Inbox `{ErrorData}` (`uint64 code, bytes message`) and `code == 2` (encode/`validateCiphertext` failed; return leg `originalSender` is `SYSTEM_SENDER`), treat as an Inbox **system error** (`requests(...).status == SystemFailed`; COTI app never ran). Clear pending UX and allow a **new** submit — do not call COTI `retryFailedRequest`. App `raise` payloads are dApp-defined — decode only when status is `Failed`.
 - `pending == true` from pToken status reads = account cannot start another transfer/burn yet.
+
+### Deposit / withdraw failure recovery
+
+- After a deposit mint request is `SystemFailed`, call `PrivacyPortal.refundFailedDeposit(mintRequestId)` (permissionless; underlying returns to the depositor) to unlock escrow. App `raise` / `Failed` is **not** refundable (mint should not raise).
+- After a withdraw transfer request is `Failed` or `SystemFailed`, call `PrivacyPortal.cancelFailedWithdrawal(withdrawalId)` so status becomes `Failed` (no underlying release).
 
 ## How Request IDs Are Generated
 
@@ -38,6 +44,11 @@ In frontend code, `writeContract` usually gives only the transaction hash, not S
 
 - Deposit: `PrivacyPortal.DepositRequested(..., mintRequestId)`.
 - Withdraw: `PrivacyPortal.WithdrawalRequested(withdrawalId, ..., transferRequestId)`.
+- Fee breakdown (portal vs PoD): `PrivacyPortal.OperationFeesPaid(payer, correlationId, isDeposit, isNativeWrap, portalFee, podFee, podCallbackFee, amount)`.
+  - `portalFee` = protocol fee retained by the portal (native).
+  - `podFee` = native forwarded to pToken/inbox.
+  - `podCallbackFee` = callback slice within `podFee`.
+  - `correlationId` = mint `requestId` or `withdrawalId`.
 - Direct pToken action: `PodERC20.TransferRequestSubmitted(from, to, requestId)` or `ApprovalRequestSubmitted(owner, spender, requestId)`.
 
 Do not assume request ids can be predicted client-side.

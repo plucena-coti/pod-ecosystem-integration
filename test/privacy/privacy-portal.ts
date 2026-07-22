@@ -16,6 +16,10 @@ import {
   expectWithdrawTransferSubmitted,
   fundUserAndApprovePortal,
   markPTokenTransferSuccessful,
+  markPTokenTransferFailed,
+  markPTokenTransferSystemFailed,
+  markPTokenMintSystemFailed,
+  markPTokenMintRaised,
   requestWithdraw,
   seedNativePortalVault,
   seedPortalVault,
@@ -155,7 +159,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
       client: { public: publicClient, wallet },
     });
 
-    await factory.write.setWithdrawalsPaused([true], { account: owner });
+    await factory.write.pause({ account: owner });
 
     await assert.rejects(
       factoryPortal.write.requestWithdrawWithPermit(
@@ -166,7 +170,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
     );
   });
 
-  it("factory deposit pause disables deposits across factory-created portals", async function () {
+  it("factory pause disables deposits across factory-created portals", async function () {
     ctx = await freshPortal();
     const { factory, portal, underlying } = await deployFactoryPortalPair(ctx);
     const factoryPortal = await viem.getContractAt("PrivacyPortal", portal, {
@@ -175,7 +179,7 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
 
     await underlying.write.mint([owner, 100n], { account: owner });
     await underlying.write.approve([portal, 100n], { account: owner });
-    await factory.write.setDepositsPaused([true], { account: owner });
+    await factory.write.pause({ account: owner });
 
     await assert.rejects(
       factoryPortal.write.deposit([owner, 50n, 0n, 77n], { account: owner, value: DEFAULT_POD_FEE }),
@@ -215,5 +219,43 @@ describe("PrivacyPortal", { concurrency: 1 }, async function () {
 
     assert.equal(await nativeCtx.underlying.read.balanceOf([nativeCtx.recipient]), 300n);
     assert.equal(await publicClient.getBalance({ address: nativeCtx.recipient }), recipientEthBefore);
+  });
+
+  it("refunds deposit only after SystemFailed mint (not app Failed)", async function () {
+    ctx = await freshPortal();
+    await fundUserAndApprovePortal(ctx, 250n);
+    await depositPublicToken(ctx, 250n);
+    const requestId = (await ctx.pToken.read.lastMintRequestId()) as `0x${string}`;
+
+    await assert.rejects(ctx.portal.write.refundFailedDeposit([requestId], { account: owner }));
+
+    await markPTokenMintRaised(ctx);
+    await assert.rejects(ctx.portal.write.refundFailedDeposit([requestId], { account: owner }));
+
+    await markPTokenMintSystemFailed(ctx);
+    const before = (await ctx.underlying.read.balanceOf([owner])) as bigint;
+    // Permissionless: any account may trigger; underlying still returns to the depositor.
+    const [, other] = await viem.getWalletClients();
+    await ctx.portal.write.refundFailedDeposit([requestId], { account: other.account });
+    assert.equal((await ctx.underlying.read.balanceOf([owner])) as bigint, before + 250n);
+  });
+
+  it("cancels withdrawal after Failed or SystemFailed pToken transfer", async function () {
+    ctx = await freshPortal();
+    await seedPortalVault(ctx, 500n);
+    const { withdrawalId } = await requestWithdraw(ctx, 300n);
+
+    await assert.rejects(ctx.portal.write.cancelFailedWithdrawal([withdrawalId], { account: owner }));
+
+    await markPTokenTransferFailed(ctx);
+    await ctx.portal.write.cancelFailedWithdrawal([withdrawalId], { account: owner });
+    const w1 = await ctx.portal.read.withdrawals([withdrawalId]);
+    assert.equal(Number(w1.status ?? w1[4]), 3);
+
+    const again = await requestWithdraw(ctx, 100n);
+    await markPTokenTransferSystemFailed(ctx);
+    await ctx.portal.write.cancelFailedWithdrawal([again.withdrawalId], { account: owner });
+    const w2 = await ctx.portal.read.withdrawals([again.withdrawalId]);
+    assert.equal(Number(w2.status ?? w2[4]), 3);
   });
 });

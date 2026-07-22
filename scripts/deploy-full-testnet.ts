@@ -6,6 +6,7 @@ import {
   appendDeploymentLog,
   asAddress,
   configureTestnetInboxMinFees,
+  configureInboxGasPriceBounds,
   deployAndWireTestnetPriceOracle,
   deployDeterministicInbox,
   ensureMinerRegistered,
@@ -125,6 +126,13 @@ const main = async () => {
     walletClient: sourceWalletClient,
     chainId: sourceChainId,
   });
+  console.log("[deploy-full-testnet] Configuring source inbox gasPriceBounds…");
+  await configureInboxGasPriceBounds({
+    inbox: sourceInbox,
+    publicClient: sourcePublicClient,
+    walletClient: sourceWalletClient,
+    chainId: sourceChainId,
+  });
   await appendDeploymentLog({
     contract: "Inbox",
     address: sourceInbox.address,
@@ -149,6 +157,9 @@ const main = async () => {
     cotiInboxDeploy.alreadyDeployed
       ? `[deploy-full-testnet] COTI Inbox already deployed: ${cotiInbox.address}`
       : `[deploy-full-testnet] COTI Inbox deployed: ${cotiInbox.address}`
+  );
+  console.log(
+    "[deploy-full-testnet] CreateX note: address depends on Inbox bytecode (Ownable(address(1))); bump inboxSalt.label if bytecode changes."
   );
   console.log("[deploy-full-testnet] Deploying MpcExecutor...");
   const cotiExecutor = await cotiViem.deployContract("MpcExecutor", [cotiInbox.address], {
@@ -177,6 +188,13 @@ const main = async () => {
   );
   console.log("[deploy-full-testnet] Configuring COTI inbox min fees (local=COTI, remote=ETH)…");
   await configureTestnetInboxMinFees({
+    inbox: cotiInbox,
+    publicClient: cotiPublicClient,
+    walletClient: cotiWalletClient,
+    chainId: cotiChainIdNumber,
+  });
+  console.log("[deploy-full-testnet] Configuring COTI inbox gasPriceBounds (non-EIP-1559)…");
+  await configureInboxGasPriceBounds({
     inbox: cotiInbox,
     publicClient: cotiPublicClient,
     walletClient: cotiWalletClient,

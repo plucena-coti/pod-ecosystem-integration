@@ -48,13 +48,29 @@ Set `"adapter": "band"` on a chain to deploy `BandLiveOracle` instead (configure
 
 **Choosing the Privacy Portal oracle:** `consumers.privacyPortalFactory` overrides `priceOracle` for the factory constructor and `WireFactoryOracle`. Leave empty to use the deployed `priceOracle`. Set a different address when inbox and portal should use separate `PoDPriceOracle` instances.
 
+### Deployment verification (`verify:deployments`)
+
+Reads `deployConfig.json` and, for each chain with an inbox:
+
+1. Prints fee templates, `gasPriceBounds`, oracle USD legs, miner/owner wiring, and MpcAdder/MpcExecutor config.
+2. Unless `--config-only`, runs `MpcAdder.add` on each source EVM that has `mpcAdder` (Sepolia / Fuji), mines the request on COTI, mines the callback on the source chain, and decrypts `a+b`.
+
+```bash
+npm run verify:deployments:config
+npm run verify:deployments
+npm run verify:deployments -- --chains=sepolia
+```
+
+Requires funded `PRIVATE_KEY` / `COTI_TESTNET_PRIVATE_KEY` registered as inbox miners on both legs.
+
 | CLI target | Purpose |
 |------------|---------|
-| **PriceOracle** | Deploy live adapter + `PoDPriceOracle` (or plain `PriceOracle` when `adapter: "plain"`); records `priceOracle`, `oracle.liveAdapter`, `oracle.adapter` |
+| **Inbox** | CreateX `deployCreate3AndInit` (bytecode includes `Ownable(address(1))`; bump `inboxSalt.label` if bytecode changes) |
+| **PriceOracle** | Deploy live adapter + `PoDPriceOracle` (or plain `PriceOracle` when `adapter: "plain"`); **runbook:** `setInboxTokens` → seed prices/feeds → `refreshCache`; records `priceOracle`, `oracle.liveAdapter`, `oracle.adapter` |
 | **WireInboxOracle** | `Inbox.setPriceOracle` — uses `consumers.inbox` or `priceOracle` |
 | **WireFactoryOracle** | `PrivacyPortalFactory.setPriceOracle` — uses `consumers.privacyPortalFactory` or `priceOracle` |
-| **PpFactory** | Deploys factory; constructor oracle = `consumers.privacyPortalFactory` or `priceOracle` (zero if unset — wire later) |
-| **FeeConfig** | Applies inbox min-fee templates from `feeConfig` |
+| **PpFactory** | Deploys factory; constructor oracle = `consumers.privacyPortalFactory` or `priceOracle` (zero if unset — wire later). Optional `privacyPortalFactoryConstructor.feeRecipient` / `rescueRecipient` override the factory owner defaults. |
+| **FeeConfig** | Applies inbox min-fee templates from `feeConfig` **and** `{setGasPriceBounds}` from `gasPriceBounds` (required on COTI / non-EIP-1559) |
 | **PpPortalFee** | Applies factory default portal protocol fees from `portalFee` |
 
 **Launch order (source chain, example Sepolia):**
@@ -63,7 +79,32 @@ Set `"adapter": "band"` on a chain to deploy `BandLiveOracle` instead (configure
 DEPLOY_CLI_NETWORK=sepolia DEPLOY_CLI_TARGETS=inbox,priceOracle,feeConfig,wireInboxOracle,ppPortalImpl,ppTokenImpl,ppPortalFactory,wireFactoryOracle,ppPortalFee npm run deploy:cli
 ```
 
+`gasPriceBounds` lives under `chains[chainId].gasPriceBounds`:
+
+```json
+"gasPriceBounds": {
+  "minPriorityFeeWei": "0",
+  "minGasPriceWei": "2000000000",
+  "maxGasPriceWei": "0"
+}
+```
+
+On COTI set a non-zero `maxGasPriceWei` (fee→gas uses clamped `tx.gasprice` when `basefee` is unavailable). See also `deployConfig.inboxSalt.bytecodeNote` / `runbook`.
+
 `portalFee` lives under `chains[chainId].portalFee` with `deposit` and `withdraw` legs, each `{ fixedFee, percentageBps, maxFee }` (native wei; `percentageBps` / 1_000_000). **PpPortalFee** compares on-chain factory defaults via `getFeeConfig` and calls `setDefaultDepositFee` / `setDefaultWithdrawFee` when they differ. Sign with the factory owner (`PRIVATE_KEY` / `FACTORY_OWNER`).
+
+Optional deploy-time snapshot under `chains[chainId].privacyPortalFactoryConstructor`:
+
+```json
+"privacyPortalFactoryConstructor": {
+  "feeRecipient": "0x…",
+  "rescueRecipient": "0x…",
+  "priceOracle": "0x…",
+  "portalFee": { "deposit": { … }, "withdraw": { … } }
+}
+```
+
+`feeRecipient` / `rescueRecipient` default to the factory owner when omitted. `feeRecipient` is immutable after deploy; admin may later call `setRescueRecipient` (`DEFAULT_ADMIN_ROLE`).
 
 After deploying a new oracle, run **WireInboxOracle** and **WireFactoryOracle** to switch live contracts. Keeper: call `oracle.refreshCache()` periodically for **inbox** fee validation only (portal fees are live per tx).
 
@@ -139,6 +180,10 @@ If you see `gas required exceeds allowance (2993)` (or a similar small number), 
 1. Fund `0xdF9F8FcA4591227C092FCBAb45A846C19fb6d1ae` via the COTI testnet faucet (Discord: `testnet <address>`).
 2. Or send COTI from a funded wallet (e.g. miner `MINER_ADDRESS` / `0x075445…` in `.env`) to the mother owner.
 3. Re-run **PpMotherAllow** on COTI Testnet.
+4. On the source chain, run **PpRetryMotherReg** (or re-select each `p* portal` target). That will:
+   - Call permissionless COTI `retryFailedRequest` for registrations that reverted (e.g. `FactoryNotAllowed` before allowlist).
+   - It does **not** call `batchProcessRequests`; the off-chain miner must ingest the outbound first.
+   - Request ids are resolved via (in order): `deployConfig.motherRegistrationRequestId`, Snowscan/Etherscan logs (Fuji has no Blockscout), source-inbox nonce scan, then a short RPC `getLogs` lookback.
 
 The deploy-cli now pre-checks balance and reports `Insufficient native balance for gas` instead of the opaque RPC error.
 

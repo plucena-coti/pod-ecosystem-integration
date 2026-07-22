@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
+import { network } from "hardhat";
 import { JsonRpcProvider } from "ethers";
 import { privateKeyToAccount } from "viem/accounts";
-import { decryptUint } from "@coti-io/coti-sdk-typescript";
+import { decryptUint, prepareIT256 } from "@coti-io/coti-sdk-typescript";
 import { ONBOARD_CONTRACT_ADDRESS, transferNative, Wallet as CotiWallet } from "@coti-io/coti-ethers";
-import { encodeFunctionData, parseAbi } from "viem";
+import { createWalletClient, custom, encodeFunctionData, decodeAbiParameters, parseAbi, parseEther, toFunctionSelector, toHex } from "viem";
 import {
   buildEncryptedInput256,
   decodeCtUint256,
   decryptUint256,
   fundContractForInboxFees,
   getLatestRequest,
+  getResponseRequestBySource,
   logStep,
   mineRequest,
   normalizePrivateKey,
@@ -23,6 +25,7 @@ import {
   type MineRequestOptions,
   type TestContext,
 } from "../system/mpc-test-utils.js";
+import { isSimCotiBackend } from "../sim-coti/sim-coti-utils.js";
 
 /**
  * Gas for COTI `batchProcessRequests` in pod-token tests (`syncBalances` runs `offBoardToUser` per account in one tx).
@@ -46,9 +49,11 @@ export type PodTokenTestContext = {
   pod: any;
   /** Same Hardhat `PodErc20Mintable` instance, wallet = COTI-funded owner (cross-chain test pattern). */
   podAsCoti: any;
+  /** Same Hardhat pToken, wallet = Bob (for concurrent-sender / receiver-not-locked cases). */
+  podAsBob: any;
   podCotiMother: any;
   owner: `0x${string}`;
-  bob: { address: `0x${string}`; userKey: string; wallet: CotiWallet };
+  bob: { address: `0x${string}`; privateKey: `0x${string}`; userKey: string; wallet: CotiWallet };
 };
 
 const deriveSecondaryPrivateKey = (primaryKey: string) => {
@@ -108,54 +113,78 @@ export async function setupFundedUnonboardedUser(
 }
 
 /** Funds and onboards a second account (Bob) for balance decryption on transfers. */
-export async function setupBobUser(primaryPrivateKey: string): Promise<{
+export async function setupBobUser(
+  primaryPrivateKey: string,
+  opts?: { cotiViem?: any }
+): Promise<{
   address: `0x${string}`;
+  privateKey: `0x${string}`;
   userKey: string;
   wallet: CotiWallet;
 }> {
-  const cotiRpcUrl = requireEnv("COTI_TESTNET_RPC_URL");
+  const simBackend = isSimCotiBackend();
+  const cotiRpcUrl = simBackend
+    ? process.env.SIM_COTI_RPC_URL || process.env.COTI_TESTNET_RPC_URL || "http://127.0.0.1:8546"
+    : requireEnv("COTI_TESTNET_RPC_URL");
   const onboardAddress = process.env.COTI_ONBOARD_CONTRACT_ADDRESS || ONBOARD_CONTRACT_ADDRESS;
   const normalizedKey = deriveSecondaryPrivateKey(primaryPrivateKey);
+  const bobAccount = privateKeyToAccount(normalizedKey);
   const provider = new JsonRpcProvider(cotiRpcUrl) as any;
   const fundingWallet = new CotiWallet(normalizePrivateKey(primaryPrivateKey), provider);
   const wallet = new CotiWallet(normalizedKey, provider);
 
-  const balance = await provider.getBalance(wallet.address);
-  const minBalance = 300_000_000_000_000_000n;
-  if (balance < minBalance) {
-    logStep("Funding Bob for COTI onboarding");
-    let funded = false;
-    for (let attempt = 0; attempt < 4 && !funded; attempt++) {
-      if (attempt > 0) {
-        logStep(`Bob funding retry ${attempt} (nonce / fee)`);
-        await new Promise((r) => setTimeout(r, 5_000));
+  if (!simBackend) {
+    const balance = await provider.getBalance(wallet.address);
+    const minBalance = 300_000_000_000_000_000n;
+    if (balance < minBalance) {
+      logStep("Funding Bob for COTI onboarding");
+      let funded = false;
+      for (let attempt = 0; attempt < 4 && !funded; attempt++) {
+        if (attempt > 0) {
+          logStep(`Bob funding retry ${attempt} (nonce / fee)`);
+          await new Promise((r) => setTimeout(r, 5_000));
+        }
+        try {
+          const tx = await transferNative(
+            provider,
+            fundingWallet,
+            wallet.address,
+            1_000_000_000_000_000_000n,
+            100_000
+          );
+          funded = !!tx;
+        } catch (e) {
+          logStep(`Bob funding attempt failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
-      try {
-        const tx = await transferNative(
-          provider,
-          fundingWallet,
-          wallet.address,
-          1_000_000_000_000_000_000n,
-          100_000
-        );
-        funded = !!tx;
-      } catch (e) {
-        logStep(`Bob funding attempt failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (!funded) {
+        throw new Error("Failed to fund Bob after retries.");
       }
     }
-    if (!funded) {
-      throw new Error("Failed to fund Bob after retries.");
-    }
-  }
 
-  const fundedBalance = await provider.getBalance(wallet.address);
-  if (fundedBalance < minBalance) {
-    throw new Error(`Bob balance still too low: ${fundedBalance}`);
+    const fundedBalance = await provider.getBalance(wallet.address);
+    if (fundedBalance < minBalance) {
+      throw new Error(`Bob balance still too low: ${fundedBalance}`);
+    }
   }
 
   const userKey = await onboardUser(normalizedKey, cotiRpcUrl, onboardAddress, "COTI_AES_KEY_BOB");
+  if (simBackend) {
+    const { registerUserOnSim } = await import("../sim-coti/sim-coti-utils.js");
+    const cotiViem =
+      opts?.cotiViem ?? (await network.connect({ network: "simCoti" })).viem;
+    // Owner (Hardhat #0) signs the simRegisterUserKey write for Bob.
+    const [signer] = await cotiViem.getWalletClients();
+    await registerUserOnSim(cotiViem, bobAccount.address, userKey, signer.account);
+    logStep(`simCoti: registered Bob AES key for ${bobAccount.address}`);
+  }
   wallet.setAesKey(userKey);
-  return { address: wallet.address as `0x${string}`, userKey, wallet };
+  return {
+    address: bobAccount.address,
+    privateKey: normalizedKey,
+    userKey,
+    wallet,
+  };
 }
 
 /** Inbox + miners + `PodERC20` on Hardhat + `PodErc20CotiMother` on COTI with factory registration. */
@@ -203,10 +232,28 @@ export async function setupPodTokenTestContext(params: {
     client: { public: base.sepolia.publicClient, wallet: hardhatCotiWallet },
   });
 
-  const bob = await setupBobUser(cotiPk);
+  const bob = await setupBobUser(cotiPk, { cotiViem: params.cotiViem });
+  const bobAccount = privateKeyToAccount(bob.privateKey);
+  const hardhatTransport = custom({
+    request: (args) => base.sepolia.publicClient.request(args),
+  });
+  const [hardhatFunder] = await params.sepoliaViem.getWalletClients();
+  const bobHardhatBalance = await base.sepolia.publicClient.getBalance({ address: bob.address });
+  if (bobHardhatBalance < parseEther("0.5")) {
+    const fundHash = await hardhatFunder.sendTransaction({ to: bob.address, value: parseEther("1") });
+    await base.sepolia.publicClient.waitForTransactionReceipt({ hash: fundHash, ...receiptWaitOptions });
+  }
+  const bobHardhatWallet = createWalletClient({
+    account: bobAccount,
+    chain: base.sepolia.publicClient.chain,
+    transport: hardhatTransport,
+  });
+  const podAsBob = await params.sepoliaViem.getContractAt("PodErc20Mintable", pod.address, {
+    client: { public: base.sepolia.publicClient, wallet: bobHardhatWallet },
+  });
 
   logStep("Pod token setup complete");
-  return { base, pod, podAsCoti, podCotiMother, owner, bob };
+  return { base, pod, podAsCoti, podAsBob, podCotiMother, owner, bob };
 }
 
 /** Native wei for `sendOneWayMessage` registration (matches `PrivacyPortalFactory.createPortal` default). */
@@ -409,13 +456,49 @@ export function encryptAmount(ctx: PodTokenTestContext, amount: bigint) {
   return buildEncryptedInput256(ctx.base, amount);
 }
 
-/** UTF-8 string from revert / raise payload bytes returned by `failedRequests`. */
+/**
+ * Encrypt+sign an amount with Bob's AES key / ECDSA key (for wrong-signer system-error tests).
+ * Uses the same inbox `batchProcessRequests` selector as {@link buildEncryptedInput256}.
+ */
+export function encryptAmountAsBob(ctx: PodTokenTestContext, amount: bigint) {
+  const functionSelector = toFunctionSelector(
+    "batchProcessRequests(uint256,(bytes32,address,address,(bytes4,bytes,bytes8[],bytes32[]),bytes4,bytes4,bool,bytes32,uint256,uint256)[])"
+  );
+  const it = prepareIT256(
+    amount,
+    {
+      wallet: ctx.bob.wallet as any,
+      userKey: ctx.bob.userKey,
+    },
+    ctx.base.contracts.inboxCoti.address,
+    functionSelector
+  );
+  const signature =
+    typeof it.signature === "string"
+      ? (it.signature as `0x${string}`)
+      : toHex(it.signature as any);
+  return {
+    ciphertext: it.ciphertext,
+    signature,
+  };
+}
+
+/** UTF-8 string from app-raise `failedRequests` bytes (raw reason) or system {ErrorData}.message. */
 export function utf8FromFailedRequestBytes(hex: `0x${string}`): string {
   if (!hex || hex === "0x") {
     return "";
   }
-  const slice = hex.startsWith("0x") ? hex.slice(2) : hex;
-  return Buffer.from(slice, "hex").toString("utf8");
+  try {
+    const [, message] = decodeAbiParameters([{ type: "uint64" }, { type: "bytes" }], hex);
+    const msgHex = message as `0x${string}`;
+    if (!msgHex || msgHex === "0x") {
+      return "";
+    }
+    return Buffer.from(msgHex.slice(2), "hex").toString("utf8");
+  } catch {
+    const slice = hex.startsWith("0x") ? hex.slice(2) : hex;
+    return Buffer.from(slice, "hex").toString("utf8");
+  }
 }
 
 /**
@@ -445,6 +528,33 @@ export async function mineLatestOutboundRoundTrip(
     ...mineOptions,
     gas: mineOptions?.gas ?? getDefaultCotiMineGasPodToken(),
   });
+}
+
+/** Mines a specific PoD→COTI outbound request (and its Hardhat return leg). Use when multiple are queued. */
+export async function mineOutboundRoundTripForRequest(
+  ctx: PodTokenTestContext,
+  outboundRequest: Awaited<ReturnType<typeof getLatestRequest>>,
+  label: string,
+  mineOptions?: MineRequestOptions
+): Promise<{ cotiIncomingRequestId: `0x${string}` }> {
+  const gas = mineOptions?.gas ?? getDefaultCotiMineGasPodToken();
+  const { requestIdUsed: cotiIncomingRequestId } = await mineRequest(
+    ctx.base,
+    "coti",
+    BigInt(ctx.base.chainIds.sepolia),
+    outboundRequest,
+    label,
+    { ...mineOptions, gas }
+  );
+  const returnLegRequest = await getResponseRequestBySource(
+    ctx.base.contracts.inboxCoti,
+    cotiIncomingRequestId,
+    label
+  );
+  await mineRequest(ctx.base, "sepolia", ctx.base.chainIds.coti, returnLegRequest, label, {
+    nonceOverride: mineOptions?.nonceOverride,
+  });
+  return { cotiIncomingRequestId };
 }
 
 export function assertIncludesInsensitive(haystack: string, needle: string) {

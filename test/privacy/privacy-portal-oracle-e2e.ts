@@ -52,8 +52,7 @@ describe("Privacy Portal oracle fees", { concurrency: 1 }, async function () {
     const portalAddr = (await cloneHelper.read.lastClone()) as `0x${string}`;
     const portal = await viem.getContractAt("PrivacyPortal", portalAddr, { client });
     const pToken = await viem.deployContract("MockPodERC20ForPortal", [], { client });
-    await portal.write.initialize([owner, underlying.address, pToken.address, 6, false], { account: owner });
-    await portal.write.setPauseController([factory.address], { account: owner });
+    await portal.write.initialize([underlying.address, pToken.address, 6, false, factory.address], { account: owner });
 
     const expected = expectedDynamicPortalFee({
       amount: DEPOSIT_AMOUNT,

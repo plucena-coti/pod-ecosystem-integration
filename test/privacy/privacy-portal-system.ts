@@ -4,13 +4,14 @@
  * Covers deploy wiring, deposit (underlying → pToken mint), withdraw (permit + transferAndCall + burn),
  * and direct pToken actions (transfer, approve/transferFrom, burn) plus multi-step flows.
  *
- * Run: `npm run test:pp-system` (sets `PP_SYSTEM_TESTS=1`).
+ * Run: `npm run test:pp-system` (sets `PP_SYSTEM_TESTS=1` and `COTI_BACKEND=sim`).
+ * Override with live COTI: `COTI_BACKEND=live npm run test:pp-system`.
  * Step logs use `[mpc-test] privacy-portal-system: …` — grep that prefix to follow phases.
  */
 import assert from "node:assert/strict";
 import { afterEach, before, describe, it } from "node:test";
-import { network } from "hardhat";
 import { collectInboxFeesAfterTest, logStep, podTwoWayWriteOptions } from "../system/mpc-test-utils.js";
+import { connectDualChainForTests } from "../sim-coti/sim-coti-utils.js";
 import {
   assertPortalWiring,
   completePodOpRoundTrip,
@@ -35,8 +36,8 @@ if (!runPpSystem) {
 }
 
 d("PrivacyPortal (Sepolia ↔ COTI system)", { concurrency: 1 }, async function () {
-  const { viem: sepoliaViem } = await network.connect({ network: "hardhat" });
-  const { viem: cotiViem } = await network.connect({ network: "cotiTestnet" });
+  // COTI_BACKEND=sim → in-process simCoti; otherwise live cotiTestnet.
+  const { sepoliaViem, cotiViem } = await connectDualChainForTests();
 
   let ctx: PrivacyPortalSystemContext;
 

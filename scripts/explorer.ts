@@ -1,4 +1,5 @@
-import type { Address, PublicClient } from "viem";
+import type { Address, Hex, PublicClient } from "viem";
+import { encodeEventTopics, parseAbiItem, pad } from "viem";
 
 /** Block-explorer API descriptor used for verification status checks. */
 type ExplorerApi = {
@@ -25,6 +26,7 @@ export const explorerApiForChain = (chainId: number): ExplorerApi | undefined =>
     case 43113:
       return {
         kind: "etherscan",
+        // Fuji has no Blockscout; Snowscan is routed via Etherscan V2.
         apiUrl: "https://api.etherscan.io/v2/api?chainid=43113",
         siteUrl: "https://testnet.snowscan.xyz",
         apiKey: process.env.ETHERSCAN_API_KEY,
@@ -91,4 +93,66 @@ export const isVerifiedOnExplorer = async (
   } catch {
     return undefined;
   }
+};
+
+const TOKEN_REGISTRATION_REQUESTED = parseAbiItem(
+  "event TokenRegistrationRequested(address indexed pToken, bytes32 indexed requestId)"
+);
+
+/**
+ * Fetch `TokenRegistrationRequested` logs via Etherscan-family API (Snowscan for Fuji).
+ * Prefer this over eth_getLogs on public Fuji RPCs, which often reject / rate-limit range queries.
+ */
+export const findTokenRegistrationRequestIdsViaExplorer = async (params: {
+  chainId: number;
+  factory: Address;
+  pToken: Address;
+  fromBlock?: bigint | number;
+  toBlock?: bigint | number | "latest";
+}): Promise<`0x${string}`[]> => {
+  const api = explorerApiForChain(params.chainId);
+  if (!api || api.kind !== "etherscan") return [];
+
+  const [topic0] = encodeEventTopics({
+    abi: [TOKEN_REGISTRATION_REQUESTED],
+    eventName: "TokenRegistrationRequested",
+  });
+  const topic1 = pad(params.pToken.toLowerCase() as Hex, { size: 32 });
+
+  const query = new URLSearchParams({
+    module: "logs",
+    action: "getLogs",
+    address: params.factory,
+    topic0: topic0 as string,
+    topic0_1_opr: "and",
+    topic1,
+    fromBlock: String(params.fromBlock ?? 0),
+    toBlock: String(params.toBlock ?? "latest"),
+  });
+  if (api.apiKey) query.set("apikey", api.apiKey);
+  const sep = api.apiUrl.includes("?") ? "&" : "?";
+
+  const res = await fetch(`${api.apiUrl}${sep}${query.toString()}`, {
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new Error(`explorer getLogs HTTP ${res.status}`);
+  }
+  const json: any = await res.json();
+  if (json?.status === "0" && typeof json?.result === "string") {
+    // Etherscan uses status=0 for "No records found" and for errors.
+    if (/no record|no logs|result not found/i.test(json.result)) return [];
+    throw new Error(`explorer getLogs: ${json.result}`);
+  }
+  const rows: any[] = Array.isArray(json?.result) ? json.result : [];
+  const ids: `0x${string}`[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const topics: string[] = row.topics ?? [];
+    const requestId = (topics[2] ?? undefined) as `0x${string}` | undefined;
+    if (!requestId || seen.has(requestId.toLowerCase())) continue;
+    seen.add(requestId.toLowerCase());
+    ids.push(requestId);
+  }
+  return ids.reverse();
 };

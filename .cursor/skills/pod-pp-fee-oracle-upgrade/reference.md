@@ -10,7 +10,7 @@
 | `BandLiveOracle` / `ChainlinkLiveOracle` | Low-level feed adapter (usually read via `PoDPriceOracle` only) |
 | `PodERC20` (pToken) | `estimateFee()` — PoD inbox fee component |
 
-Portal `pauseController` points at the factory; resolve factory via portal or config.
+Portal `factory` is the pause/fee/operator authority; resolve via portal or config.
 
 ## ABI Signature Diff (Migration)
 

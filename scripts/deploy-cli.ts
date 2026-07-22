@@ -16,6 +16,7 @@ import {
   asAddress,
   chainlinkFeedsForChain,
   configureTestnetInboxMinFees,
+  configureInboxGasPriceBounds,
   configurePortalFactoryFees,
   createPublicClientForChain,
   deployDeterministicInbox,
@@ -32,6 +33,10 @@ import {
   podConfigureKeepInbox,
   patchBuildInfoSolcLongVersion,
   readFeeConfigForChain,
+  readGasPriceBoundsForChain,
+  readInboxGasPriceBounds,
+  gasPriceBoundsEq,
+  formatGasPriceBounds,
   readPortalFeeConfigSync,
   portalFeeConfigTupleFromJson,
   normalizePortalFeeConfig,
@@ -47,6 +52,11 @@ import {
   COTI_ADMIN_WRITE_GAS,
   ensureGasFunds,
 } from "./deploy-utils.js";
+import {
+  connectPrivacyPortalNetwork,
+  ensureMotherRegistration,
+  registrationRequestIdFromReceipt,
+} from "./privacyPortal/deploy-utils.js";
 import {
   explorerAddressUrl,
   hasOnChainCode,
@@ -157,12 +167,22 @@ const recordInboxSalt = async (params: {
   address: Address;
 }): Promise<void> => {
   const cfg = await readCfg();
+  const prev = (cfg.inboxSalt ?? {}) as Record<string, unknown>;
   cfg.inboxSalt = {
+    ...prev,
     label: params.label,
     deployer: params.deployer,
     salt: params.salt,
     guardedSalt: params.guardedSalt,
     address: params.address,
+    bytecodeNote:
+      typeof prev.bytecodeNote === "string" && prev.bytecodeNote.length > 0
+        ? prev.bytecodeNote
+        : "CreateX deterministic address depends on Inbox creation bytecode, including Ownable(address(1)) placeholder owner in the constructor. Bump `label` (and clear salt/guardedSalt/address) whenever Inbox bytecode changes before redeploying.",
+    runbook:
+      typeof prev.runbook === "string" && prev.runbook.length > 0
+        ? prev.runbook
+        : "After inbox deploy: priceOracle (setInboxTokens → seed prices/feeds → refreshCache) → feeConfig (min-fee templates + gasPriceBounds) → wireInboxOracle. On non-EIP-1559 chains (COTI), gasPriceBounds are required.",
   };
   await writeCfg(cfg);
 };
@@ -178,7 +198,12 @@ const ppFactoryVerifyArgs = (ctx: DeployCtx): string[] => {
   const chainCfg = chainCfgSync(ctx.chainId);
   const owner = factoryOwner(ctx);
   const stored = chainCfg.privacyPortalFactoryConstructor as
-    | { priceOracle?: string; portalFee?: { deposit: Record<string, string>; withdraw: Record<string, string> } }
+    | {
+        feeRecipient?: string;
+        rescueRecipient?: string;
+        priceOracle?: string;
+        portalFee?: { deposit: Record<string, string>; withdraw: Record<string, string> };
+      }
     | undefined;
   const portalFee = stored?.portalFee
     ? {
@@ -187,6 +212,12 @@ const ppFactoryVerifyArgs = (ctx: DeployCtx): string[] => {
       }
     : readPortalFeeConfigSync(ctx.chainId);
   const portalOracle = stored?.priceOracle ?? resolvePortalOracle(chainCfg) ?? zeroAddress;
+  const feeRecipient =
+    stored?.feeRecipient && isAddr(stored.feeRecipient) ? (stored.feeRecipient as Address) : owner;
+  const rescueRecipient =
+    stored?.rescueRecipient && isAddr(stored.rescueRecipient)
+      ? (stored.rescueRecipient as Address)
+      : feeRecipient;
   return [
     owner,
     ctx.inboxAddress,
@@ -194,7 +225,8 @@ const ppFactoryVerifyArgs = (ctx: DeployCtx): string[] => {
     readCotiMother(pairedCotiChainId(ctx)) ?? "",
     chainCfg.podTokenImplementation,
     chainCfg.portalImplementation,
-    owner,
+    feeRecipient,
+    rescueRecipient,
     oracleTokensForChain(ctx.chainId).portalNative,
     portalOracle,
     portalFee.deposit.fixedFee.toString(),
@@ -561,6 +593,8 @@ const buildPpTokenTargets = (): Target[] => {
 
         let portal = (await factory.read.portalForUnderlying([underlying])) as Address;
         let pToken = (await factory.read.pTokenForUnderlying([underlying])) as Address;
+        let registrationRequestId =
+          (entry.motherRegistrationRequestId as `0x${string}` | undefined) || undefined;
         if (!isAddr(portal)) {
           const hash = await factory.write.createPortal(
             [
@@ -569,22 +603,60 @@ const buildPpTokenTargets = (): Target[] => {
               t.pSymbol,
               t.decimals,
               t.canonicalKey === "WETH" || t.canonicalKey === "WAVAX",
-              factoryOwner(ctx),
             ],
             { account: ctx.deployer, value: 1_000_000_000_000_000n }
           );
-          await waitMined(ctx.publicClient, hash);
+          const receipt = await waitMined(ctx.publicClient, hash);
           portal = (await factory.read.portalForUnderlying([underlying])) as Address;
           pToken = (await factory.read.pTokenForUnderlying([underlying])) as Address;
+          registrationRequestId = registrationRequestIdFromReceipt(receipt, pToken);
           console.log(`  ${t.key} registration requested on COTI mother for pToken=${pToken}`);
+          if (registrationRequestId) {
+            console.log(`  ${t.key} motherRegistrationRequestId=${registrationRequestId}`);
+          }
         } else {
           console.log(`  ${t.key} portal already exists at factory: ${portal}`);
         }
 
         await recordSourceTokenField(ctx.chainId, t.key, "portal", portal);
         await recordSourceTokenField(ctx.chainId, t.key, "pToken", pToken);
+        if (registrationRequestId) {
+          await recordSourceTokenField(
+            ctx.chainId,
+            t.key,
+            "motherRegistrationRequestId",
+            registrationRequestId
+          );
+        }
         console.log(`  ${t.key} (${srcLabel(ctx.chainId)}) portal=${portal} pToken=${pToken}`);
         console.log(`  Recorded deployConfig.chains.${ctx.chainId}.privacyPortalTokens.${t.key}`);
+
+        const cotiMother = asAddress(readCotiMother(pairedCotiChainId(ctx))!, "cotiMother");
+        const coti = await connectPrivacyPortalNetwork(
+          Number(pairedCotiChainId(ctx)) === 7082400 ? "cotiTestnet" : "cotiTestnet"
+        );
+        const cotiInbox = asAddress(
+          (await readCfg()).chains?.[String(coti.chainId)]?.inbox || ctx.inboxAddress,
+          "coti inbox"
+        );
+        await ensureMotherRegistration({
+          source: {
+            viem: ctx.viem,
+            chainId: ctx.chainId,
+            chainName: ctx.networkName,
+            publicClient: ctx.publicClient,
+            walletClient: ctx.walletClient,
+            deployer: ctx.deployer,
+          },
+          coti,
+          factory: factoryAddr,
+          mother: cotiMother,
+          sourceInbox: ctx.inboxAddress,
+          cotiInbox,
+          pToken,
+          label: t.key,
+          knownRequestIds: registrationRequestId ? [registrationRequestId] : undefined,
+        });
       },
     });
   }
@@ -624,6 +696,13 @@ const TARGETS: Target[] = [
         console.log("  MINER_ADDRESS not set; skipped addMiner");
       }
       if (alreadyDeployed) console.log("  (inbox already existed at deterministic address)");
+      console.log(
+        "  CreateX note: address is tied to Inbox creation bytecode (incl. Ownable(address(1)) placeholder)."
+      );
+      console.log(
+        "  If bytecode changes, bump deployConfig.inboxSalt.label (and clear salt/address) before redeploy."
+      );
+      console.log("  Next: priceOracle (setInboxTokens → seed → refreshCache), then feeConfig, then wireInboxOracle");
       return inbox.address as Address;
     },
     verifyArgs: () => [],
@@ -669,7 +748,8 @@ const TARGETS: Target[] = [
       if (liveAdapter) {
         console.log(`  live adapter (${oracleAdapterType(oracleConfig)}) at ${liveAdapter}`);
       }
-      console.log("  run WireInboxOracle / WireFactoryOracle to point consumers at the oracle(s)");
+      console.log("  oracle runbook applied: setInboxTokens → seed prices/feeds → refreshCache");
+      console.log("  next: WireInboxOracle (and WireFactoryOracle on source) so consumers use this oracle");
       console.log(
         "  optional: set oracle.consumers.inbox / oracle.consumers.privacyPortalFactory to use different addresses"
       );
@@ -771,11 +851,30 @@ const TARGETS: Target[] = [
       const inbox = await getInbox(ctx);
       const [curLocal, curRemote] = await readInboxFeeConfigs(inbox);
       const { local, remote } = await readFeeConfigForChain(ctx.chainId);
-      if (feeEq(curLocal, local) && feeEq(curRemote, remote)) {
-        return { applied: true, detail: "matches config" };
+      const feesMatch = feeEq(curLocal, local) && feeEq(curRemote, remote);
+      let boundsMatch = true;
+      let boundsDetail = "";
+      try {
+        const curBounds = await readInboxGasPriceBounds(inbox);
+        const desiredBounds = await readGasPriceBoundsForChain(ctx.chainId);
+        boundsMatch = gasPriceBoundsEq(curBounds, desiredBounds);
+        boundsDetail = boundsMatch
+          ? `bounds ${formatGasPriceBounds(curBounds)}`
+          : `bounds on-chain ${formatGasPriceBounds(curBounds)} != config ${formatGasPriceBounds(desiredBounds)}`;
+      } catch (error) {
+        boundsMatch = false;
+        boundsDetail = `bounds unreadable (${error instanceof Error ? error.message : String(error)})`;
       }
-      const isSet = !feeIsZero(curLocal) || !feeIsZero(curRemote);
-      return { applied: false, detail: isSet ? "differs from config" : "not set" };
+      if (feesMatch && boundsMatch) {
+        return { applied: true, detail: `matches config; ${boundsDetail}` };
+      }
+      const parts: string[] = [];
+      if (!feesMatch) {
+        const isSet = !feeIsZero(curLocal) || !feeIsZero(curRemote);
+        parts.push(isSet ? "fee templates differ from config" : "fee templates not set");
+      }
+      if (!boundsMatch) parts.push(boundsDetail);
+      return { applied: false, detail: parts.join("; ") };
     },
     run: async (ctx) => {
       const inbox = await getInbox(ctx);
@@ -785,6 +884,17 @@ const TARGETS: Target[] = [
         walletClient: ctx.walletClient,
         chainId: ctx.chainId,
       });
+      console.log("  updateMinFeeConfigs applied from deployConfig.feeConfig");
+      const bounds = await configureInboxGasPriceBounds({
+        inbox,
+        publicClient: ctx.publicClient,
+        walletClient: ctx.walletClient,
+        chainId: ctx.chainId,
+      });
+      console.log(`  setGasPriceBounds applied: ${formatGasPriceBounds(bounds)}`);
+      if (ctx.chainId === 7082400 || ctx.chainId === 2632500) {
+        console.log("  (non-EIP-1559 / COTI: gasPriceBounds are required for safe fee→gas conversion)");
+      }
     },
   },
   {
@@ -1071,6 +1181,15 @@ const TARGETS: Target[] = [
       const owner = factoryOwner(ctx);
       const { portalNative } = oracleTokensForChain(ctx.chainId);
       const portalFee = readPortalFeeConfigSync(ctx.chainId);
+      const stored = chainCfg.privacyPortalFactoryConstructor as
+        | { feeRecipient?: string; rescueRecipient?: string }
+        | undefined;
+      const feeRecipient =
+        stored?.feeRecipient && isAddr(stored.feeRecipient) ? (stored.feeRecipient as Address) : owner;
+      const rescueRecipient =
+        stored?.rescueRecipient && isAddr(stored.rescueRecipient)
+          ? (stored.rescueRecipient as Address)
+          : feeRecipient;
       return deploySimple(ctx, "PrivacyPortalFactory", [
         owner,
         ctx.inboxAddress,
@@ -1078,7 +1197,8 @@ const TARGETS: Target[] = [
         cotiMother,
         podTokenImpl,
         portalImpl,
-        owner,
+        feeRecipient,
+        rescueRecipient,
         portalNative,
         oracleAddr,
         portalFee.deposit.fixedFee,
@@ -1090,6 +1210,90 @@ const TARGETS: Target[] = [
       ]);
     },
     verifyArgs: (ctx) => ppFactoryVerifyArgs(ctx),
+  },
+
+  {
+    id: "ppRetryMotherReg",
+    label: "PpRetryMotherReg",
+    kind: "action",
+    roles: ["source"],
+    dependsOn: ["ppPortalFactory"],
+    status: async (ctx) => {
+      const cotiMother = readCotiMother(pairedCotiChainId(ctx));
+      if (!isAddr(cotiMother)) return { applied: false, detail: "needs COTI mother" };
+      const factoryAddr = chainCfgSync(ctx.chainId).privacyPortalFactory;
+      if (!isAddr(factoryAddr)) return { applied: false, detail: "needs factory" };
+
+      const cotiPublicClient = createPublicClientForChain(Number(pairedCotiChainId(ctx)));
+      const mother = await ctx.viem.getContractAt("PodErc20CotiMother", cotiMother as Address, {
+        client: { public: cotiPublicClient, wallet: ctx.walletClient },
+      });
+
+      let pending = 0;
+      let registered = 0;
+      for (const t of PP_TOKENS) {
+        if (!t.sources.includes(ctx.chainId)) continue;
+        const entry = readSourceToken(ctx.chainId, t.key);
+        if (!isAddr(entry.pToken)) continue;
+        const ok = await mother.read.isRegistered([BigInt(ctx.chainId), entry.pToken]);
+        if (ok) registered++;
+        else pending++;
+      }
+      if (pending === 0 && registered === 0) {
+        return { applied: false, detail: "no portals recorded" };
+      }
+      if (pending === 0) {
+        return { applied: true, detail: `${registered} registered` };
+      }
+      return { applied: false, detail: `${pending} awaiting registration (${registered} ok)` };
+    },
+    run: async (ctx) => {
+      const factoryAddr = asAddress(chainCfgSync(ctx.chainId).privacyPortalFactory, "privacyPortalFactory");
+      const cotiMother = asAddress(readCotiMother(pairedCotiChainId(ctx)), "cotiMother");
+      const coti = await connectPrivacyPortalNetwork("cotiTestnet");
+      const cotiInbox = asAddress(
+        (await readCfg()).chains?.[String(coti.chainId)]?.inbox || ctx.inboxAddress,
+        "coti inbox"
+      );
+      const source = {
+        viem: ctx.viem,
+        chainId: ctx.chainId,
+        chainName: ctx.networkName,
+        publicClient: ctx.publicClient,
+        walletClient: ctx.walletClient,
+        deployer: ctx.deployer,
+      };
+
+      for (const t of PP_TOKENS) {
+        if (!t.sources.includes(ctx.chainId)) continue;
+        const entry = readSourceToken(ctx.chainId, t.key);
+        if (!isAddr(entry.pToken)) {
+          console.log(`  skip ${t.key}: no pToken in deployConfig`);
+          continue;
+        }
+        try {
+          const known =
+            typeof entry.motherRegistrationRequestId === "string" &&
+            entry.motherRegistrationRequestId.startsWith("0x")
+              ? [entry.motherRegistrationRequestId as `0x${string}`]
+              : undefined;
+          const result = await ensureMotherRegistration({
+            source,
+            coti,
+            factory: factoryAddr,
+            mother: cotiMother,
+            sourceInbox: ctx.inboxAddress,
+            cotiInbox,
+            pToken: entry.pToken as Address,
+            label: t.key,
+            knownRequestIds: known,
+          });
+          console.log(`  ${t.key}: ${result}`);
+        } catch (err) {
+          console.error(`  ${t.key} FAILED:`, err instanceof Error ? err.message : err);
+        }
+      }
+    },
   },
 
   // --- PrivacyPortal test-token wiring (per token, per source chain; clones via the factories) ---
@@ -1415,6 +1619,14 @@ const main = async () => {
     guardedSalt: computeGuardedSalt(deployer, inboxSalt),
     address: inboxAddress,
   });
+
+  const saltMeta = (await readCfg()).inboxSalt ?? {};
+  if (typeof saltMeta.bytecodeNote === "string") {
+    console.log(`CreateX: ${saltMeta.bytecodeNote}`);
+  }
+  if (typeof saltMeta.runbook === "string") {
+    console.log(`Runbook: ${saltMeta.runbook}`);
+  }
 
   const ctx: DeployCtx = {
     viem,

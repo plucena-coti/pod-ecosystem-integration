@@ -22,7 +22,6 @@ const main = async () => {
   const symbol = envString("PTOKEN_SYMBOL");
   const decimals = Number(process.env.PTOKEN_DECIMALS || "18");
   const owner = optionalEnvAddress("FACTORY_OWNER");
-  const portalOwner = optionalEnvAddress("PORTAL_OWNER");
 
   const source = await connectPrivacyPortalNetwork(sourceNetwork);
   const coti = await connectPrivacyPortalNetwork(cotiNetwork);
@@ -58,7 +57,6 @@ const main = async () => {
     name,
     symbol,
     decimals,
-    portalOwner,
     cotiCtx: coti,
     cotiMother,
     cotiChainId: BigInt(coti.chainId),

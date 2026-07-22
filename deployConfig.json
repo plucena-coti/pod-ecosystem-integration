@@ -1,10 +1,12 @@
 {
   "inboxSalt": {
-    "label": "pod.inbox.v2.1",
+    "label": "pod.inbox.v2.2",
     "deployer": "0xdf9f8fca4591227c092fcbab45a846c19fb6d1ae",
-    "salt": "0xdF9F8FcA4591227C092FCBAb45A846C19fb6d1ae00e24e3e2a02f9525180a8a4",
-    "guardedSalt": "0x05dc9d880f43b0965e14803e5d7071c9e88805775b7642d2ac5e36562937f2da",
-    "address": "0xAb625bE229F603f6BBF964474AFf6d5487e364De"
+    "salt": "0xdF9F8FcA4591227C092FCBAb45A846C19fb6d1ae001fb9f7e3c0a1d0b8afd4c1",
+    "guardedSalt": "0xc56d3f92a63cc05db162a4fcaf61a45a2469b9cca77f23db895484b9e8d2fd22",
+    "address": "0x3b8B70819f27e0438cBcE7f31894f799da52648F",
+    "bytecodeNote": "CreateX deterministic address depends on Inbox creation bytecode, including Ownable(address(1)) placeholder owner in the constructor. Bump `label` (and clear salt/guardedSalt/address) whenever Inbox bytecode changes before redeploying.",
+    "runbook": "After inbox deploy: priceOracle (setInboxTokens → seed prices/feeds → refreshCache) → feeConfig (min-fee templates + gasPriceBounds) → wireInboxOracle. On non-EIP-1559 chains (COTI), gasPriceBounds are required."
   },
   "chains": {
     "1": {
@@ -36,6 +38,11 @@
           "inbox": "",
           "privacyPortalFactory": ""
         }
+      },
+      "gasPriceBounds": {
+        "minPriorityFeeWei": "0",
+        "minGasPriceWei": "2000000000",
+        "maxGasPriceWei": "0"
       }
     },
     "31337": {
@@ -93,14 +100,19 @@
           "percentageBps": "0",
           "maxFee": "340282366920938463463374607431768211455"
         }
+      },
+      "gasPriceBounds": {
+        "minPriorityFeeWei": "0",
+        "minGasPriceWei": "2000000000",
+        "maxGasPriceWei": "0"
       }
     },
     "43113": {
-      "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
-      "priceOracle": "0xb06340c020274ef5d92f664070966402a4d27712",
+      "inbox": "0x3b8B70819f27e0438cBcE7f31894f799da52648F",
+      "priceOracle": "0xf2283ca93a6747c547a961c50d0393d549c57268",
       "oracle": {
         "adapter": "chainlink",
-        "liveAdapter": "0x7eba6cfba05baf066a8072ef50e41065c01cdcd0",
+        "liveAdapter": "0xdeb631df0735984da95f77abc6f394bf27a7c230",
         "bandStdRef": "",
         "maxStaleness": 86400,
         "fetchInterval": 300,
@@ -154,12 +166,14 @@
           "maxFee": "100000000000000000"
         }
       },
-      "mpcAdder": "0xf51c789e4c60d33a2abcfd656e607724f56aaf0d",
-      "portalImplementation": "0x041ce0750c07638267bea9902c59554d3f4c9d4f",
-      "podTokenImplementation": "0xcee95959573618ee8464526c591fe70ae56ab293",
-      "privacyPortalFactory": "0xcf06fbf94af5e9eceb15aa1ba6458b72521424fd",
+      "mpcAdder": "0x8b7d9e70477aabe68500b72acb7f367993edde39",
+      "portalImplementation": "0x63e97937e42c153cdeb25e9aca9d3d0373aec0a5",
+      "podTokenImplementation": "0xa7e4838327317f4ce6cc8b5ab07a57fdba842c77",
+      "privacyPortalFactory": "0xf3cf653e1baee7b4e4001067780dee38991b1cbd",
       "privacyPortalFactoryConstructor": {
-        "priceOracle": "0x0000000000000000000000000000000000000000",
+        "feeRecipient": "0xdf9f8fca4591227c092fcbab45a846c19fb6d1ae",
+        "rescueRecipient": "0xdf9f8fca4591227c092fcbab45a846c19fb6d1ae",
+        "priceOracle": "",
         "portalFee": {
           "deposit": {
             "fixedFee": "0",
@@ -176,30 +190,46 @@
       "privacyPortalTokens": {
         "pMTT": {
           "underlying": "0x328e70e1c52662cd5f19f824fcb8b463d77a6686",
-          "portal": "0x64D99D761aC68D1a495B4f7E5bE7277586EDFE78",
-          "pToken": "0x8F34570CEAD49273D5DA8A0E25e728eCC28af267"
+          "portal": "0xf4100d21eB4B1a66aDde58A01D1E32356F268b3F",
+          "pToken": "0xFC6283a9000d7D5Cf8A058A04A9ED90265Af1634"
         },
         "pUSDC": {
           "underlying": "0x5425890298aed601595a70AB815c96711a31Bc65",
-          "portal": "0x956D8994a56F65d2fF1F9b09565857a09374D852",
-          "pToken": "0x4C8dD09336BB7A219bef9448914a9E4621cE3645"
+          "portal": "0x090D2dc8C38275939b9381Ff2aa53012Ff412E34",
+          "pToken": "0xe2235E064a3CEB5F1765c3b095855549d3c8A8a4"
         },
         "pWAVAX": {
           "underlying": "0xd00ae08403B9bbb9124bB305C09058E32C39A48c",
-          "portal": "0x25E7a1BddF4b9696F19A726Cb2Ce550467527e90",
-          "pToken": "0xe7956aDaC668b563Dc77eD29C5E7A4Ef5edFB3FB"
+          "portal": "0x20e7239cd78BDf2E8f34c52947e54fE68D7b536F",
+          "pToken": "0x0c58954d91392794A50F610dF8c84228D63BE9D4",
+          "motherRegistrationRequestId": "0x000000000000a86900000000006c11a000000000000000000000000000000003"
         }
+      },
+      "privatePayrollCoti": "0xd523915b48d7985837f5b10ffc6c41dc66313f04",
+      "payrollVault": "0x5c8f11c891bf884a153a98535a65f37903df509c",
+      "payrollClaimStore": "0x5889141489b4f4377cb575888231ebdd7f492064",
+      "payrollCampaignFactory": "0x40eca0ffc86c83bcde80504926a1dd7f8d84a25b",
+      "payrollCampaignFacade": "0xd01e50071FDf432BA74552Ea0d0Cd22367461848",
+      "gasPriceBounds": {
+        "minPriorityFeeWei": "0",
+        "minGasPriceWei": "2000000000",
+        "maxGasPriceWei": "0"
       }
     },
     "2632500": {
       "inbox": "",
       "cotiExecutor": "",
-      "cotiMother": ""
+      "cotiMother": "",
+      "gasPriceBounds": {
+        "minPriorityFeeWei": "0",
+        "minGasPriceWei": "2000000000",
+        "maxGasPriceWei": "50000000000"
+      }
     },
     "7082400": {
-      "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
-      "cotiExecutor": "0x68e151b78d51cea01eef6ee354579e044606a739",
-      "priceOracle": "0xe1afeda542d1b9003df0e133187f845dea8b1ba8",
+      "inbox": "0x3b8B70819f27e0438cBcE7f31894f799da52648F",
+      "cotiExecutor": "0x6804961167c3c8ef2bf6839ddcf51ec1fbe800c3",
+      "priceOracle": "0xb471e172876ba9bb24a43528779ea31e0b0bda2f",
       "oracle": {
         "adapter": "plain",
         "maxStaleness": 86400,
@@ -223,7 +253,7 @@
         }
       },
       "pErc20Coti": "",
-      "cotiMother": "0x293daf267bf657b0bae870a0ce8cd59f1e5eb32a",
+      "cotiMother": "0xaeb2271959031b65cba63302cff5d970b49d4a7b",
       "feeConfig": {
         "local": {
           "constantFee": "12000000",
@@ -239,14 +269,20 @@
           "errorLength": "300",
           "bufferRatioX10000": "5000"
         }
+      },
+      "privatePayrollCoti": "0xd523915b48d7985837f5b10ffc6c41dc66313f04",
+      "gasPriceBounds": {
+        "minPriorityFeeWei": "0",
+        "minGasPriceWei": "2000000000",
+        "maxGasPriceWei": "50000000000"
       }
     },
     "11155111": {
-      "inbox": "0xAb625bE229F603f6BBF964474AFf6d5487e364De",
-      "priceOracle": "0x7eecdceec31d285aee99c7960b405f63593903d1",
+      "inbox": "0x3b8B70819f27e0438cBcE7f31894f799da52648F",
+      "priceOracle": "0x3281160888138e786c3eb0f4f4cc51453d8dfeff",
       "oracle": {
         "adapter": "band",
-        "liveAdapter": "0x9d6ed5b1f4162aeca9140a61e9e7a5ca7043c3dd",
+        "liveAdapter": "0x31bbf71c03854c0fd7949a62509ba867585f7af4",
         "bandStdRef": "0x8c064bCf7C0DA3B3b090BAbFE8f3323534D84d68",
         "maxStaleness": 0,
         "fetchInterval": 300,
@@ -274,25 +310,42 @@
           "privacyPortalFactory": ""
         }
       },
-      "mpcAdder": "0x06008d120dce48cc5ab2121c0a18d3ec49585fae",
-      "portalImplementation": "0x4cf43909aa16c85f78606cdda96a88494ca43194",
-      "podTokenImplementation": "0x69cb293b7cca85db7bb68b32090c684b9282b366",
-      "privacyPortalFactory": "0xe26a0db663a9d546ab4dfd02d8b4305e3df9ce73",
+      "mpcAdder": "0xacc74e07db35fb740509fc82228e631f4f08441c",
+      "portalImplementation": "0x7f36e1eabbee6a1cd724b4ade37fe475f807d982",
+      "podTokenImplementation": "0xe8e2fdd23ea2d5f9bb4632d11f7267602a059e5d",
+      "privacyPortalFactory": "0x0117d640ce96805739cf5f82683b0dd9532541ee",
+      "privacyPortalFactoryConstructor": {
+        "feeRecipient": "0xdf9f8fca4591227c092fcbab45a846c19fb6d1ae",
+        "rescueRecipient": "0xdf9f8fca4591227c092fcbab45a846c19fb6d1ae",
+        "priceOracle": "",
+        "portalFee": {
+          "deposit": {
+            "fixedFee": "10000000000000",
+            "percentageBps": "500",
+            "maxFee": "100000000000000000"
+          },
+          "withdraw": {
+            "fixedFee": "10000000000000",
+            "percentageBps": "500",
+            "maxFee": "100000000000000000"
+          }
+        }
+      },
       "privacyPortalTokens": {
         "pMTT": {
           "underlying": "0xd3f5c63f4D87D2235b295FbA83351d31d0eD1BeE",
-          "portal": "0xaCD7fE838354Dd72147d9c387558477D7d4D6514",
-          "pToken": "0x46f9f46971f6bEc21Fe5d42909Ef99D1D2af43c4"
+          "portal": "0x621E744eF059262Fd531a0f345d38Ce31d92D105",
+          "pToken": "0x1566ADA98695D39b2D5A8e1359d7Af9D567c74ab"
         },
         "pUSDC": {
           "underlying": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-          "portal": "0xDc0b0e5681C17A8449Baf5aBB130d7664Bb56d5a",
-          "pToken": "0xc727D2Ab43bF0d4cab75FD5C046BA38899ca988a"
+          "portal": "0x79679CE36664c3b1360501B2c7ea6bbee65a2717",
+          "pToken": "0xc04Cb7256E849C34877D801A77f9165BaC209c06"
         },
         "pWETH": {
           "underlying": "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9",
-          "portal": "0xa4efc209144565126c034dfD23208f040748923f",
-          "pToken": "0x28f6CFc45c3D4C13E6BAB034cb05278Db496b9d6"
+          "portal": "0x7666F6576956530E2D56CDB548b71e62286d1d18",
+          "pToken": "0xD586736543F7666d1adbF862B769Ba838a9a3deD"
         }
       },
       "feeConfig": {
@@ -322,6 +375,11 @@
           "percentageBps": "500",
           "maxFee": "100000000000000000"
         }
+      },
+      "gasPriceBounds": {
+        "minPriorityFeeWei": "0",
+        "minGasPriceWei": "2000000000",
+        "maxGasPriceWei": "0"
       }
     }
   }

@@ -14,6 +14,10 @@ const privateKeyForCotiTestnet = () =>
   process.env.PRIVATE_KEY?.trim() ||
   configVariable("PRIVATE_KEY");
 
+/** Hardhat mnemonic account #0 — used by `COTI_BACKEND=sim` dual-chain tests. */
+const HARDHAT_DEFAULT_PK0 =
+  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
+
 /** Unique 0x-prefixed keys for Hardhat / COTI test wallets (order preserved). */
 const collectTestPrivateKeys = (): `0x${string}`[] => {
   const raw = [
@@ -31,6 +35,10 @@ const collectTestPrivateKeys = (): `0x${string}`[] => {
       seen.add(normalized);
       out.push(normalized as `0x${string}`);
     }
+  }
+  // Append Hardhat #0 so sim dual-chain `getWalletClient` can unlock it without reordering wallet[0].
+  if (!seen.has(HARDHAT_DEFAULT_PK0)) {
+    out.push(HARDHAT_DEFAULT_PK0);
   }
   return out;
 };
@@ -63,6 +71,10 @@ export default defineConfig({
         },
       },
     },
+    7082401: {
+      name: "simCoti",
+      chainType: "generic",
+    },
     43113: {
       name: "Avalanche Fuji",
       chainType: "l1",
@@ -82,10 +94,13 @@ export default defineConfig({
     // Do not set `path` to soljson.js — that forces the WASM compiler, which OOMs on
     // aarch64 when compiling vendored MpcCore.sol. Let Hardhat download the native
     // linux-arm64 binary instead (see preferWasm: false).
+    //
+    // `paris`: COTI testnet rejects Shanghai `PUSH0`. Keep the whole tree on Paris so
+    // Inbox / MpcExecutor / mothers deploy without Shanghai+ opcodes.
     version: "0.8.28",
     preferWasm: false,
     settings: {
-      evmVersion: "cancun",
+      evmVersion: "paris",
       viaIR: true,
       optimizer: {
         enabled: true,
@@ -121,6 +136,26 @@ export default defineConfig({
       chainType: "l1",
       chainId: 7082400,
       url: envOrConfig("COTI_TESTNET_RPC_URL"),
+      accounts: cotiTestnetAccounts(),
+    },
+    // In-process simCoti (fake MPC precompile). Used when COTI_BACKEND=sim.
+    simCoti: {
+      type: "edr-simulated",
+      chainId: parseInt(process.env.SIM_COTI_CHAIN_ID || "7082401"),
+      accounts: hardhatTestAccounts().length > 0 ? hardhatTestAccounts() : undefined,
+    },
+    localSimCoti: {
+      type: "http",
+      chainType: "l1",
+      chainId: parseInt(process.env.SIM_COTI_CHAIN_ID || "7082401"),
+      url: process.env.SIM_COTI_RPC_URL ?? "http://127.0.0.1:8546",
+      accounts: cotiTestnetAccounts(),
+    },
+    localSepolia: {
+      type: "http",
+      chainType: "l1",
+      chainId: 31337,
+      url: process.env.LOCAL_SEPOLIA_RPC_URL ?? "http://127.0.0.1:8545",
       accounts: cotiTestnetAccounts(),
     },
     avalancheFuji: {

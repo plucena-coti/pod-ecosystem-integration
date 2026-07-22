@@ -48,8 +48,9 @@ Inbox-only tests live in **coti-pod-inbox-contracts** (`test:inbox-events`, `tes
 Configuration: `deployConfig.json`, `PrivacyPortalConfig.json`.
 
 ```bash
-npm run deploy:privacy:factories
-npm run deploy:full-testnet
+npm run deploy:cli
+npm run verify:deployments:config   # fees / oracles / wiring dump
+npm run verify:deployments          # + MpcAdder.add round-trips (Sepolia/Fuji ↔ COTI)
 ```
 
 Inbox deploy scripts: run from **coti-pod-inbox-contracts** (`deploy:inbox`, `relay`).
@@ -62,4 +63,4 @@ When inbox APIs change, run from **coti-pod-inbox-contracts**:
 npm run sync:interfaces -- ../coti-contracts
 ```
 
-Then bump `contracts/pod/inbox/SYNC_MANIFEST.json` in coti-contracts and re-run `npm run link:contracts` here.
+Then see `contracts/pod/SYNC_MANIFEST.json` in coti-contracts and re-run `npm run link:contracts` here.

@@ -110,6 +110,23 @@ export type FeeConfigJson = {
   bufferRatioX10000: string | number;
 };
 
+/**
+ * Inbox `{setGasPriceBounds}` params from `deployConfig.chains[id].gasPriceBounds` (wei strings).
+ * Used by fee→gas conversion (`basefee + minPriorityFee` on EIP-1559; clamped `tx.gasprice` otherwise).
+ */
+export type GasPriceBoundsJson = {
+  minPriorityFeeWei: string | number;
+  minGasPriceWei: string | number;
+  /** Zero disables the ceiling. */
+  maxGasPriceWei: string | number;
+};
+
+export type GasPriceBoundsTuple = {
+  minPriorityFeeWei: bigint;
+  minGasPriceWei: bigint;
+  maxGasPriceWei: bigint;
+};
+
 /** Portal protocol fee template (`fixedFee` / `maxFee` in native wei; `percentageBps` / 1_000_000). */
 export type PortalFeeConfigJson = {
   fixedFee: string | number;
@@ -183,11 +200,23 @@ type DeployConfig = {
       oracle?: OracleConfigJson;
       /** Min-fee templates for this chain's inbox (local = this chain, remote = paired chain). */
       feeConfig?: { local: FeeConfigJson; remote: FeeConfigJson };
+      /**
+       * Reference gas-price bounds for inbox fee→gas conversion ({setGasPriceBounds}).
+       * Required on non-EIP-1559 chains (e.g. COTI); recommended on all deploys.
+       */
+      gasPriceBounds?: GasPriceBoundsJson;
       /** Factory default portal protocol fees (deposit + withdraw). */
       portalFee?: { deposit: PortalFeeConfigJson; withdraw: PortalFeeConfigJson };
       [key: string]: unknown;
     }
   >;
+};
+
+/** Contract defaults: floor = 2 gwei, no tip, no ceiling (EIP-1559 uses basefee + tip). */
+export const DEFAULT_GAS_PRICE_BOUNDS: GasPriceBoundsTuple = {
+  minPriorityFeeWei: 0n,
+  minGasPriceWei: 2_000_000_000n,
+  maxGasPriceWei: 0n,
 };
 
 /** Fixed testnet spot prices (USD per whole 18‑decimal native token). Used as {PriceOracle} 18‑decimal fixed values. */
@@ -211,6 +240,13 @@ export type OracleUsdLegs = { localUsd18: bigint; remoteUsd18: bigint };
 /** @deprecated Use {@link oracleUsdPricesForChain} */
 export type OracleLegs = OracleUsdLegs;
 
+/** Live COTI testnet (7082400) or in-process simCoti (7082401). */
+const isCotiFamilyChainId = (chainId: number): boolean => {
+  const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
+  const simCotiId = Number(process.env.SIM_COTI_CHAIN_ID || "7082401");
+  return chainId === cotiTestnetId || chainId === simCotiId;
+};
+
 /**
  * Local = this chain's native token; remote = the paired chain's native token.
  * Sepolia / local Hardhat: local ETH, remote COTI. COTI testnet: local COTI, remote ETH.
@@ -220,20 +256,21 @@ export const oracleUsdPricesForChain = (chainId: number): OracleUsdLegs => {
   const coti = usdPerWholeToken18(TESTNET_COTI_USD);
   const avax = usdPerWholeToken18(TESTNET_AVAX_USD);
   const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
-  if (chainId === 11155111 || chainId === 31337) {
+  const simCotiId = Number(process.env.SIM_COTI_CHAIN_ID || "7082401");
+  if (chainId === 11155111 || chainId === 31337 || chainId >= 313_370_000) {
     return { localUsd18: eth, remoteUsd18: coti };
   }
   if (chainId === AVALANCHE_FUJI_CHAIN_ID) {
     return { localUsd18: avax, remoteUsd18: coti };
   }
-  if (chainId === cotiTestnetId) {
+  if (isCotiFamilyChainId(chainId)) {
     return { localUsd18: coti, remoteUsd18: eth };
   }
   throw new Error(
     `Unsupported chainId ${chainId} for testnet oracle legs. ` +
       `Use Sepolia (11155111), Avalanche Fuji (${AVALANCHE_FUJI_CHAIN_ID}), ` +
-      `COTI testnet (${cotiTestnetId}), or local (31337), ` +
-      `or set COTI_TESTNET_CHAIN_ID to match this network.`
+      `COTI testnet (${cotiTestnetId}), simCoti (${simCotiId}), or local (31337), ` +
+      `or set COTI_TESTNET_CHAIN_ID / SIM_COTI_CHAIN_ID to match this network.`
   );
 };
 
@@ -351,7 +388,7 @@ export const chainlinkFeedsForChain = (chainId: number): ChainlinkFeedConfig => 
       fetchIntervalSeconds: fetchInterval,
     };
   }
-  if (chainId === cotiTestnetId) {
+  if (chainId === cotiTestnetId || isCotiFamilyChainId(chainId)) {
     return {
       localFeed: zeroAddress,
       remoteFeed: zeroAddress,
@@ -524,18 +561,17 @@ export const feeConfigTupleToJson = (t: FeeConfigTuple): FeeConfigJson => ({
  * Sepolia: local ETH (variable), remote COTI (constant). COTI: local COTI (constant), remote ETH (variable).
  */
 export const testnetMinFeeConfigsForChain = (chainId: number): { local: FeeConfigTuple; remote: FeeConfigTuple } => {
-  const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
   if (chainId === 11155111 || chainId === 31337 || chainId === AVALANCHE_FUJI_CHAIN_ID) {
     return { local: { ...FEE_CONFIG_SEPOLIA_SIDE }, remote: { ...FEE_CONFIG_COTI_SIDE } };
   }
-  if (chainId === cotiTestnetId) {
+  if (isCotiFamilyChainId(chainId)) {
     return { local: { ...FEE_CONFIG_COTI_SIDE }, remote: { ...FEE_CONFIG_SEPOLIA_SIDE } };
   }
   throw new Error(
     `Unsupported chainId ${chainId} for testnet fee configs. ` +
       `Use Sepolia (11155111), Avalanche Fuji (${AVALANCHE_FUJI_CHAIN_ID}), ` +
-      `COTI testnet (${cotiTestnetId}), or local (31337), ` +
-      `or set COTI_TESTNET_CHAIN_ID to match this network.`
+      `COTI testnet / simCoti, or local (31337), ` +
+      `or set COTI_TESTNET_CHAIN_ID / SIM_COTI_CHAIN_ID to match this network.`
   );
 };
 
@@ -559,14 +595,79 @@ export const readFeeConfigForChain = async (
   return testnetMinFeeConfigsForChain(chainId);
 };
 
+export const gasPriceBoundsFromJson = (j: GasPriceBoundsJson): GasPriceBoundsTuple => ({
+  minPriorityFeeWei: BigInt(j.minPriorityFeeWei),
+  minGasPriceWei: BigInt(j.minGasPriceWei),
+  maxGasPriceWei: BigInt(j.maxGasPriceWei),
+});
+
+export const gasPriceBoundsToJson = (t: GasPriceBoundsTuple): GasPriceBoundsJson => ({
+  minPriorityFeeWei: t.minPriorityFeeWei.toString(),
+  minGasPriceWei: t.minGasPriceWei.toString(),
+  maxGasPriceWei: t.maxGasPriceWei.toString(),
+});
+
+export const gasPriceBoundsEq = (a: GasPriceBoundsTuple, b: GasPriceBoundsTuple): boolean =>
+  a.minPriorityFeeWei === b.minPriorityFeeWei &&
+  a.minGasPriceWei === b.minGasPriceWei &&
+  a.maxGasPriceWei === b.maxGasPriceWei;
+
+/**
+ * Gas-price bounds for `chainId` from `deployConfig.json` `chains[id].gasPriceBounds`,
+ * else {@link DEFAULT_GAS_PRICE_BOUNDS}. On COTI (no reliable basefee), set explicit bounds in config.
+ */
+export const readGasPriceBoundsForChain = async (chainId: number): Promise<GasPriceBoundsTuple> => {
+  try {
+    const cfg = await readDeployConfig();
+    const bounds = cfg.chains?.[String(chainId)]?.gasPriceBounds;
+    if (bounds?.minGasPriceWei != null) {
+      return gasPriceBoundsFromJson(bounds);
+    }
+  } catch {
+    // fall through
+  }
+  return { ...DEFAULT_GAS_PRICE_BOUNDS };
+};
+
+export const readGasPriceBoundsForChainSync = (chainId: number): GasPriceBoundsTuple => {
+  try {
+    const cfg = JSON.parse(fsSync.readFileSync(deployConfigPath, "utf8")) as DeployConfig;
+    const bounds = cfg.chains?.[String(chainId)]?.gasPriceBounds;
+    if (bounds?.minGasPriceWei != null) {
+      return gasPriceBoundsFromJson(bounds);
+    }
+  } catch {
+    // fall through
+  }
+  return { ...DEFAULT_GAS_PRICE_BOUNDS };
+};
+
+export const formatGasPriceBounds = (t: GasPriceBoundsTuple): string =>
+  `priority=${t.minPriorityFeeWei} min=${t.minGasPriceWei} max=${t.maxGasPriceWei === 0n ? "none" : t.maxGasPriceWei}`;
+
+/** Read on-chain gas-price bounds from an inbox that exposes the POD-07 getters. */
+export const readInboxGasPriceBounds = async (inbox: {
+  read: {
+    minPriorityFeeWei: () => Promise<bigint>;
+    minGasPriceWei: () => Promise<bigint>;
+    maxGasPriceWei: () => Promise<bigint>;
+  };
+}): Promise<GasPriceBoundsTuple> => {
+  const [minPriorityFeeWei, minGasPriceWei, maxGasPriceWei] = await Promise.all([
+    inbox.read.minPriorityFeeWei(),
+    inbox.read.minGasPriceWei(),
+    inbox.read.maxGasPriceWei(),
+  ]);
+  return { minPriorityFeeWei, minGasPriceWei, maxGasPriceWei };
+};
+
 /** True for Sepolia, Avalanche Fuji, local Hardhat, or COTI testnet (same IDs as {@link testnetMinFeeConfigsForChain}). */
 export const isTestnetSepoliaCotiPairChain = (chainId: number): boolean => {
-  const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
   return (
     chainId === 11155111 ||
     chainId === 31337 ||
     chainId === AVALANCHE_FUJI_CHAIN_ID ||
-    chainId === cotiTestnetId
+    isCotiFamilyChainId(chainId)
   );
 };
 
@@ -622,11 +723,10 @@ const manualUsdLegsForChain = (chainId: number, oracleConfig?: OracleConfigJson)
   const cotiSpot = oracleConfig?.cotiUsdSpot?.trim();
   if (!cotiSpot) return legs;
   const coti = usdPerWholeToken18(cotiSpot);
-  const cotiTestnetId = Number(process.env.COTI_TESTNET_CHAIN_ID || "7082400");
   if (chainId === 11155111 || chainId === 31337 || chainId === AVALANCHE_FUJI_CHAIN_ID) {
     return { ...legs, remoteUsd18: coti };
   }
-  if (chainId === cotiTestnetId) {
+  if (isCotiFamilyChainId(chainId)) {
     return { ...legs, localUsd18: coti };
   }
   return legs;
@@ -1072,6 +1172,39 @@ export const configureTestnetInboxMinFees = async (params: {
 };
 
 /**
+ * Applies `{setGasPriceBounds}` from `deployConfig.json` (`chains[id].gasPriceBounds`).
+ * Run after inbox deploy; required on non-EIP-1559 chains (COTI) so fee→gas conversion is not tip-manipulable.
+ */
+export const configureInboxGasPriceBounds = async (params: {
+  inbox: {
+    write: {
+      setGasPriceBounds: (
+        args: [bigint, bigint, bigint],
+        options?: { account: `0x${string}` }
+      ) => Promise<`0x${string}`>;
+    };
+  };
+  publicClient: unknown;
+  walletClient: WalletClient;
+  chainId: number;
+}): Promise<GasPriceBoundsTuple> => {
+  const bounds = await readGasPriceBoundsForChain(params.chainId);
+  if (bounds.minGasPriceWei === 0n) {
+    throw new Error(
+      `gasPriceBounds.minGasPriceWei must be non-zero (chainId=${params.chainId}). ` +
+        `Set chains[${params.chainId}].gasPriceBounds in deployConfig.json.`
+    );
+  }
+  const deployer = await resolveDeployerAddress(params.walletClient);
+  const hash = await params.inbox.write.setGasPriceBounds(
+    [bounds.minPriorityFeeWei, bounds.minGasPriceWei, bounds.maxGasPriceWei],
+    { account: deployer }
+  );
+  await waitMined(params.publicClient, hash);
+  return bounds;
+};
+
+/**
  * Applies factory default portal fees from `deployConfig.json` (`chains[id].portalFee`).
  * Idempotent: only sends txs when on-chain config differs.
  */
@@ -1240,15 +1373,15 @@ export const getChainConfig = (config: DeployConfig, chainId: number, label: str
   return chainConfig;
 };
 
-const resolveRpcUrl = (chainId: number) => {
-  if (chainId === 7082400 && process.env.COTI_TESTNET_RPC_URL) {
-    return process.env.COTI_TESTNET_RPC_URL;
+export const resolveRpcUrl = (chainId: number) => {
+  if (chainId === 7082400) {
+    return process.env.COTI_TESTNET_RPC_URL?.trim() || "https://testnet.coti.io/rpc";
   }
-  if (chainId === 11155111 && process.env.SEPOLIA_RPC_URL) {
-    return process.env.SEPOLIA_RPC_URL;
+  if (chainId === 11155111) {
+    return process.env.SEPOLIA_RPC_URL?.trim() || "https://ethereum-sepolia-rpc.publicnode.com";
   }
   if (chainId === AVALANCHE_FUJI_CHAIN_ID) {
-    return process.env.AVALANCHE_FUJI_RPC_URL ?? "https://avalanche-fuji-c-chain-rpc.publicnode.com";
+    return process.env.AVALANCHE_FUJI_RPC_URL?.trim() || "https://avalanche-fuji-c-chain-rpc.publicnode.com";
   }
   if (process.env.RPC_URL) {
     return process.env.RPC_URL;

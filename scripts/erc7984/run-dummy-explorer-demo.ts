@@ -57,7 +57,7 @@ async function main() {
     [portal.address, inbox.address, "Dummy Private XUSD", "dpXUSD", 18],
     { client: { public: publicClient, wallet } }
   );
-  const initHash = await portal.write.initialize([owner, underlying.address, pToken.address, 18, false], {
+  const initHash = await portal.write.initialize([underlying.address, pToken.address, 18, false, owner], {
     account: owner,
   });
   await publicClient.waitForTransactionReceipt({ hash: initHash, ...receiptWaitOptions });

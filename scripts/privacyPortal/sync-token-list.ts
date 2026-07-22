@@ -184,15 +184,12 @@ const ensureSourcePortalPair = async (
     );
     return;
   }
-
-  const portalOwner = optionalEnvAddress("PORTAL_OWNER");
   const deployed = await createSourcePortalAndPToken(sourceCtx, {
     factory: sourceFactoryAddress,
     underlying: requireTokenAddress(token.erc20, `tokens.${token.symbol}.erc20`),
     name: token.name,
     symbol: token.symbol,
     decimals: token.decimals ?? 18,
-    portalOwner,
     cotiCtx,
     cotiMother,
     cotiChainId: BigInt(cotiCtx.chainId),

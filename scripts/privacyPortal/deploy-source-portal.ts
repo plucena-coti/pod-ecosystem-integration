@@ -16,7 +16,6 @@ const main = async () => {
   const name = envString("PTOKEN_NAME");
   const symbol = envString("PTOKEN_SYMBOL");
   const decimals = Number(process.env.PTOKEN_DECIMALS || "18");
-  const portalOwner = optionalEnvAddress("PORTAL_OWNER");
 
   const deployed = await createSourcePortalAndPToken(ctx, {
     factory,
@@ -24,7 +23,6 @@ const main = async () => {
     name,
     symbol,
     decimals,
-    portalOwner,
     cotiCtx: coti,
     cotiMother,
     cotiChainId: BigInt(coti.chainId),
